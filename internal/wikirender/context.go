@@ -15,7 +15,7 @@ type packageIntent struct {
 // loadCLAUDEIntents reads CLAUDE.md from the project root and extracts
 // descriptions from the "### Key Packages" section.
 func (s *renderState) loadCLAUDEIntents() {
-	dir := s.cfg.Store.ResolveProjectPath(s.cfg.Project)
+	dir := s.projectPath
 	if dir == "" {
 		return
 	}

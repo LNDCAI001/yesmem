@@ -5,6 +5,17 @@ All notable changes to YesMem are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.5] - 2026-05-05
+
+### Fixed
+
+- Cache project path to avoid SQLite single-conn deadlock
+- Add all public docs to allowlist, remove stale claude-code-repl exclude
+
+### Documentation
+
+- Add config.yaml and settings.json references, move internal docs to yesdocs
+
 ## [2.0.4] - 2026-05-05
 
 ### Testing
@@ -1881,6 +1892,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive tests for generator and storage
 
 
+[2.0.5]: https://github.com/carsteneu/yesmem/compare/v2.0.4...v2.0.5
 [2.0.4]: https://github.com/carsteneu/yesmem/compare/v2.0.3...v2.0.4
 [2.0.3]: https://github.com/carsteneu/yesmem/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/carsteneu/yesmem/compare/v2.0.1...v2.0.2

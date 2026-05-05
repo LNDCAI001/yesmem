@@ -206,7 +206,7 @@ func (s *renderState) normalizePath(path string) string {
 	if !filepath.IsAbs(path) {
 		return path
 	}
-	dir := s.cfg.Store.ResolveProjectPath(s.cfg.Project)
+	dir := s.projectPath
 	if dir != "" && strings.HasPrefix(path, dir) {
 		rel, err := filepath.Rel(dir, path)
 		if err == nil {
@@ -219,7 +219,7 @@ func (s *renderState) normalizePath(path string) string {
 // shouldIncludeFile filters out paths that don't belong in the current
 // project's wiki: other worktrees, dot-files/dirs, absolute paths.
 func (s *renderState) shouldIncludeFile(path string) bool {
-	dir := s.cfg.Store.ResolveProjectPath(s.cfg.Project)
+	dir := s.projectPath
 
 	// Exclude absolute paths not under the project root.
 	if filepath.IsAbs(path) && dir != "" && !strings.HasPrefix(path, dir) {
@@ -288,7 +288,7 @@ func (s *renderState) gitignorePatterns() []gitignorePattern {
 		return s.gitignore
 	}
 	s.gitignore = []gitignorePattern{}
-	dir := s.cfg.Store.ResolveProjectPath(s.cfg.Project)
+	dir := s.projectPath
 	if dir == "" {
 		return s.gitignore
 	}

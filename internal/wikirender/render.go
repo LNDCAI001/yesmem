@@ -13,6 +13,7 @@ import (
 
 type renderState struct {
 	cfg            *RenderConfig
+	projectPath    string
 	learnings      map[int64]Learning
 	entities       map[string][]int64
 	byLearning     map[int64][]string
@@ -76,8 +77,13 @@ type healthView struct {
 }
 
 func newRenderState(cfg *RenderConfig) *renderState {
+	var projectPath string
+	if cfg != nil && cfg.Store != nil {
+		projectPath = cfg.Store.ResolveProjectPath(cfg.Project)
+	}
 	return &renderState{
 		cfg:            cfg,
+		projectPath:    projectPath,
 		learnings:      map[int64]Learning{},
 		entities:       map[string][]int64{},
 		byLearning:     map[int64][]string{},

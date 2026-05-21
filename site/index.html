@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YesMem — Persistent Memory &amp; Adaptive Context for Claude Code</title>
-<meta name="description" content="Persistent memory and lossless context collapsing for Claude Code. Every session starts where it matters, not at zero. Local-first MCP server, zero cloud, single Go binary. 50 MCP tools, hybrid search, automatic knowledge extraction.">
+<meta name="description" content="Persistent memory and lossless context collapsing for Claude Code. Every session starts where it matters, not at zero. Local-first MCP server, zero cloud, single Go binary. 70 MCP tools, hybrid search, automatic knowledge extraction.">
 <meta name="keywords" content="Claude Code, MCP server, persistent memory, context window, AI coding assistant, Claude Code memory, knowledge management, developer tools">
 <meta name="author" content="Papoo Software &amp; Media GmbH">
 <meta name="theme-color" content="#0d1117">
@@ -126,9 +126,19 @@
         <tr><td class="py-2.5 px-4 border-b border-gray-200">Auto-corrected (superseded)</td><td class="py-2.5 px-4 border-b border-gray-200 tabular-nums">38,057</td></tr>
         <tr><td class="py-2.5 px-4 border-b border-gray-200">Context collapsing ratio</td><td class="py-2.5 px-4 border-b border-gray-200 tabular-nums text-blue-600 font-semibold">87–98%</td></tr>
         <tr><td class="py-2.5 px-4 border-b border-gray-200">LoCoMo benchmark (Opus)</td><td class="py-2.5 px-4 border-b border-gray-200 tabular-nums text-blue-600 font-semibold">0.87</td></tr>
-        <tr><td class="py-2.5 px-4 border-b border-gray-200">MCP tools</td><td class="py-2.5 px-4 border-b border-gray-200 tabular-nums">50</td></tr>
-        <tr><td class="py-2.5 px-4 border-b border-gray-200">CLI commands</td><td class="py-2.5 px-4 border-b border-gray-200 tabular-nums">~53</td></tr>
+        <tr><td class="py-2.5 px-4 border-b border-gray-200">MCP tools</td><td class="py-2.5 px-4 border-b border-gray-200 tabular-nums">70</td></tr>
+        <tr><td class="py-2.5 px-4 border-b border-gray-200">CLI commands</td><td class="py-2.5 px-4 border-b border-gray-200 tabular-nums">64</td></tr>
+        <tr><td class="py-2.5 px-4 border-b border-gray-200">Daemon RPC methods</td><td class="py-2.5 px-4 border-b border-gray-200 tabular-nums">130</td></tr>
       </table>
+    </div>
+    <div class="mt-12">
+      <h2 class="text-2xl font-semibold tracking-tight mb-5">What's new in v2.1.0</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-blue-50 rounded-lg p-5 border border-blue-200"><span class="text-blue-700 font-semibold">Self-configuring provider routing</span><p class="text-sm text-gray-600 mt-1">Reads models.json, opencode.json, and auth.json — discovers DeepSeek, OpenAI, Mistral automatically. 84 models routed with zero config.</p></div>
+        <div class="bg-blue-50 rounded-lg p-5 border border-blue-200"><span class="text-blue-700 font-semibold">SYSTEM.md identity layer</span><p class="text-sm text-gray-600 mt-1">Self-constitution template in first-person replaces the default system prompt across Claude Code, OpenCode, and Codex pipelines.</p></div>
+        <div class="bg-blue-50 rounded-lg p-5 border border-blue-200"><span class="text-blue-700 font-semibold">OpenCode built into setup</span><p class="text-sm text-gray-600 mt-1">Setup wizard now offers OpenCode as a provider option. Plugin with code-navigation hooks, rule_guard, auto-session detection.</p></div>
+        <div class="bg-blue-50 rounded-lg p-5 border border-blue-200"><span class="text-blue-700 font-semibold">Documentation restructured</span><p class="text-sm text-gray-600 mt-1">7 target-group feature docs + 4 complete reference docs. 58 discrepancies from full code audit fixed.</p></div>
+      </div>
     </div>
     <div class="mt-12">
       <h2 class="text-2xl font-semibold tracking-tight mb-3">Architecture</h2>

@@ -60,9 +60,9 @@ That's where you start. Not from zero. From where it matters.
 
 - **Self-configuring provider routing:** Add any OpenAI-compatible provider to opencode. YesMem reads `models.json`, `opencode.json`, and `auth.json`, discovers active providers automatically, patches base URLs, and routes models. Works out of the box. Toggle off with `auto_configure_providers: false`.
 
-- **OpenCode integration:** First-class plugin with code-navigation hooks (blocks grep/find when the code graph has better answers), rule_guard (every tool call evaluated against RULES.md via DeepSeek), and automatic session identification. Install happens during `yesmem setup` — zero manual steps.
+- **OpenCode integration:** First-class plugin with code-navigation hooks (blocks grep/find when the code graph has better answers), rule_guard (every tool call evaluated against RULES.md via the model), and automatic session identification. Install happens during `yesmem setup` — zero manual steps.
 
-- **Policy engine:** RULES.md with 30+ rules and a skill catalog with activation triggers. Memory search before answers. Code tools before shell. TDD before implementation. DeepSeek evaluates every tool call, BLOCK/SUGGEST decisions enforced before execution. Self-correcting — rules rewrite themselves based on what works.
+- **Policy engine:** RULES.md with 30+ rules and a skill catalog with activation triggers. Memory search before answers. Code tools before shell. TDD before implementation. The model evaluates every tool call, BLOCK/SUGGEST decisions enforced before execution. Self-correcting — rules rewrite themselves based on what works.
 
 - **Self-cleaning:** Claude gets stuck in a loop, suggesting the same broken approach three times. YesMem detects it, quarantines the learnings from that session. The knowledge base maintains itself.
 

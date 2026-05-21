@@ -284,11 +284,16 @@ func NewExtractAndEvaluateConfig(model string) ForkConfig {
 			return ctx.CacheReadTokens > 0
 		},
 		Prompt: extractAndEvaluatePrompt,
-		ParseResult: func(resp ForkResponse, s *Server) error {
-			result, err := parseExtractionJSON(resp.Content)
-			if err != nil {
-				return err
+	ParseResult: func(resp ForkResponse, s *Server) error {
+		result, err := parseExtractionJSON(resp.Content)
+		if err != nil {
+			preview := resp.Content
+			if len(preview) > 300 {
+				preview = preview[:300]
 			}
+			s.logger.Printf("[fork] extract_and_evaluate: parse error (%v), response preview: %s", err, preview)
+			return err
+		}
 
 			debugFork := s.cfg.ForkedAgentsDebug
 

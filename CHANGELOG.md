@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Shared SYSTEM.md template for OpenCode + Claude Code pipelines
+- Add SYSTEM.md with memory depth layers to repo
+- Hybrid_search nudge on first user message
+
+### Changed
+
+- Add auto_configure_providers field (default: true)
+- Update .gitignore, timestamp hint wording
+
+### Fixed
+
+- Sync user edits — re-read directive positioning, wording refinements
+- Single nudge line, no rotation
+- Rotate 3 nudge variants based on system reminder text (DE+EN)
+- Use experimental.chat.messages.transform to prepend nudge to user messages
+- Use input.sessionID not input.session.id in chat.params hook
+- Switch to chat.params hook, message.updated never fired
+- ...ir spread overwrote composed message.updated hook
+- Fix fork SSE: accumulate delta content from all chunks, not just last
+- Fix fork SSE parsing: try plain JSON first, fall back to SSE extraction
+- Skip instead of hint for doc targets, DeepSeek ignored the hint
+- Fix fork cache: remove stream:false for DeepSeek prefix cache sharing
+- Doc-target hint via context note, no more false code-nav skill suggestions
+- Grep/glob nicht mehr blocken, nur read per get_file_symbols
+
+### Performance
+
+- Add 5 missing indices + 3 PRAGMA optimizations (cache_size, mmap_size, temp_store)
+
+### Documentation
+
+- Git history 120 commits — May 15-21: fork-cache, SYSTEM.md, provider autoconf
+- Expand search exceptions — reflexive, self-contained, trivial
+- Sync runtime SYSTEM.md to repo — reflexive-search exception, formatting alignment
+- Add SYSTEM.md — canonical system prompt template
+- Auto-extracted superpowers plan/spec documents
+
+## [2.1.0] - 2026-05-18
+
+### Added
+
 - Add timestamps:true for deepseek in default config and setup, fix think_test for MANDATORY
 - Add exclude_projects to setup config template and migration
 - Add excludeProjects filter to OpencodeScanner
@@ -2503,7 +2544,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive tests for generator and storage
 
 
-[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.0.6...HEAD
+[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/carsteneu/yesmem/compare/v2.0.6...v2.1.0
 [2.0.6]: https://github.com/carsteneu/yesmem/compare/v2.0.5...v2.0.6
 [2.0.5]: https://github.com/carsteneu/yesmem/compare/v2.0.4...v2.0.5
 [2.0.4]: https://github.com/carsteneu/yesmem/compare/v2.0.3...v2.0.4

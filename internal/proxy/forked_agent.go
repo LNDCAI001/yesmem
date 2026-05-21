@@ -77,22 +77,22 @@ func buildForkRequest(ctx ForkContext, cfg ForkConfig) ([]byte, error) {
 }
 
 // buildForkRequestOpenAI builds a fork request for DeepSeek/OpenAI.
-// Appends the fork prompt as a user message. Preserves byte-identical
-// prefix with main request via []json.RawMessage for existing messages.
-// Sets stream=false for non-SSE response parsing.
+// Preserves byte-identical prefix with main request by using bytes.Replace
+// to swap only the messages array, keeping key order and all other fields
+// exactly as the original body.
 func buildForkRequestOpenAI(ctx ForkContext, cfg ForkConfig) ([]byte, error) {
-	// Use json.RawMessage to preserve raw bytes of all non-message fields
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(ctx.OriginalBody, &raw); err != nil {
-		return nil, fmt.Errorf("unmarshal original: %w", err)
+	// Extract original messages as raw bytes
+	var tmp struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(ctx.OriginalBody, &tmp); err != nil {
+		return nil, fmt.Errorf("unmarshal to extract messages: %w", err)
 	}
 
-	// Extract messages as raw JSON blobs — preserves internal key order
+	// Parse message list
 	var msgList []json.RawMessage
-	if msgRaw, ok := raw["messages"]; ok {
-		if err := json.Unmarshal(msgRaw, &msgList); err != nil {
-			return nil, fmt.Errorf("unmarshal messages: %w", err)
-		}
+	if err := json.Unmarshal(tmp.Messages, &msgList); err != nil {
+		return nil, fmt.Errorf("unmarshal messages: %w", err)
 	}
 	if msgList == nil {
 		return nil, fmt.Errorf("no messages in original request")
@@ -111,11 +111,11 @@ func buildForkRequestOpenAI(ctx ForkContext, cfg ForkConfig) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal messages: %w", err)
 	}
-	raw["messages"] = json.RawMessage(newMsgs)
 
-	raw["stream"] = json.RawMessage(`false`)
+	// Replace messages in original body — preserves key order and all other fields
+	result := bytes.Replace(ctx.OriginalBody, tmp.Messages, newMsgs, 1)
 
-	return json.Marshal(raw)
+	return result, nil
 }
 
 // buildForkRequestAnthropic is the original implementation for Anthropic API forks.
@@ -232,7 +232,13 @@ func (s *Server) fireForkedAgents(ctx ForkContext, configs []ForkConfig) {
 			endpoint = s.resolveOpenAITarget(actualModel)
 		}
 
-		resp, err := doForkCall(endpoint, s.cfg.APIKey, ctx.AuthHeader, reqBody, isOpenAI)
+		// DeepSeek disk cache takes seconds to persist after request completion.
+		// Without a delay the fork fires before the cache unit is written → 0% hit.
+		if isOpenAI {
+			time.Sleep(30 * time.Second)
+		}
+
+		resp, err := s.doForkCall(endpoint, s.cfg.APIKey, ctx.AuthHeader, reqBody, isOpenAI)
 		if err != nil {
 			s.logger.Printf("%s[req %d %s] fork %s: API error: %v%s",
 				colorOrange, ctx.ReqIdx, s.version, cfg.Name, err, colorReset)
@@ -269,8 +275,9 @@ func (s *Server) fireForkedAgents(ctx ForkContext, configs []ForkConfig) {
 // doForkCall makes the API call and parses the text response.
 // Uses apiKey for x-api-key auth; falls back to origHeaders for subscription forwarding.
 // When isOpenAI is true, uses /v1/chat/completions endpoint and OpenAI response format.
-func doForkCall(endpoint, apiKey string, origHeaders http.Header, reqBody []byte, isOpenAI bool) (ForkResponse, error) {
-	client := &http.Client{Timeout: 120 * time.Second}
+// Uses s.httpClient to share the main request's connection pool and DeepSeek KV-cache.
+func (s *Server) doForkCall(endpoint, apiKey string, origHeaders http.Header, reqBody []byte, isOpenAI bool) (ForkResponse, error) {
+	client := s.httpClient
 
 	var apiURL string
 	if isOpenAI {
@@ -371,8 +378,11 @@ func parseAnthropicResponse(body []byte) (ForkResponse, error) {
 }
 
 func parseOpenAIResponse(body []byte) (ForkResponse, error) {
-	var apiResp struct {
+	type chunk struct {
 		Choices []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
@@ -388,8 +398,46 @@ func parseOpenAIResponse(body []byte) (ForkResponse, error) {
 		} `json:"error"`
 	}
 
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return ForkResponse{}, fmt.Errorf("unmarshal: %w", err)
+	var apiResp chunk
+
+	// Try plain JSON first (stream:false responses).
+	err := json.Unmarshal(body, &apiResp)
+	if err != nil {
+		// SSE mode: collect content from all chunks, usage from last
+		bodyStr := string(body)
+		var lastErr error
+		for _, line := range strings.Split(bodyStr, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := line[6:]
+			if payload == "[DONE]" {
+				continue
+			}
+			var ck chunk
+			if err2 := json.Unmarshal([]byte(payload), &ck); err2 != nil {
+				lastErr = err2
+				continue
+			}
+			// Accumulate delta content
+			for _, choice := range ck.Choices {
+				apiResp.Choices = append(apiResp.Choices, choice)
+			}
+			// Usage: only last chunk carries it
+			if ck.Usage.PromptTokens > 0 {
+				apiResp.Usage = ck.Usage
+			}
+			if ck.Error != nil {
+				apiResp.Error = ck.Error
+			}
+		}
+		if len(apiResp.Choices) == 0 && apiResp.Error == nil {
+			if lastErr != nil {
+				return ForkResponse{}, fmt.Errorf("unmarshal SSE: %w", lastErr)
+			}
+			return ForkResponse{}, fmt.Errorf("unmarshal: %w (no JSON)", err)
+		}
 	}
 
 	if apiResp.Error != nil {
@@ -398,7 +446,11 @@ func parseOpenAIResponse(body []byte) (ForkResponse, error) {
 
 	var text string
 	for _, choice := range apiResp.Choices {
-		text += choice.Message.Content
+		if choice.Message.Content != "" {
+			text += choice.Message.Content
+		} else {
+			text += choice.Delta.Content
+		}
 	}
 
 	return ForkResponse{

@@ -902,7 +902,7 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("whoami",
 			mcplib.WithDescription("Get own session ID and agent metadata"),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
-		), s.proxyCall("whoami"))
+		), s.proxyCallWithThreadID("whoami", nil))
 
 	s.srv.AddTool(
 		mcplib.NewTool("broadcast",

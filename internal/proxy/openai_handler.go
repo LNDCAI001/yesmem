@@ -64,9 +64,31 @@ func (s *Server) handleOpenAICompletions(w http.ResponseWriter, r *http.Request)
 	// Skip the entire proxy pipeline — no MCP calls, no associative context, no system blocks.
 	// Just validate the request and forward upstream.
 	headerClaudeSession := r.Header.Get("X-Claude-Code-Session-Id")
-	if ocSessionID == "" && headerClaudeSession == "" {
+	ua := strings.ToLower(r.Header.Get("User-Agent"))
+	isCodex := strings.Contains(ua, "codex") || strings.Contains(ua, "codexcli")
+	if ocSessionID == "" && headerClaudeSession == "" && !isCodex {
 		s.logger.Printf("%s non-interactive request — skipping proxy pipeline", fmtReq(reqIdx, s.version))
 	} else {
+		// Replace default OpenCode system prompt with custom template (if enabled and loaded)
+		if s.cfg.CustomSystemPrompt.EnabledOpenCode && s.customSystemPrompt != nil {
+			skillBlock := extractSkillBlock(anthReq)
+			workDir := extractWorkingDirectory(anthReq)
+			tplCtx := buildSystemContext(buildSystemContextOpts{
+				WorkingDir:    workDir,
+				ModelID:       ctx.Model,
+				ModelDisplayName: modelDisplayName(ctx.Model),
+				HostAgentName: "OpenCode",
+			})
+			filled := fillSystemTemplate(s.customSystemPrompt, tplCtx)
+			filled = append(filled, []byte(skillBlock)...)
+			replaceFirstSystemBlock(anthReq, string(filled))
+			s.logger.Printf("%s %sCUSTOM-SYSTEM: applied (%d bytes, skillBlock=%d)%s",
+				fmtReq(reqIdx, s.version), colorGreen, len(filled), len(skillBlock), colorReset)
+			if skillBlock == "" {
+				s.logger.Printf("%s %sCUSTOM-SYSTEM: no <available_skills> found in original prompt%s",
+					fmtReq(reqIdx, s.version), colorOrange, colorReset)
+			}
+		}
 		s.runOpenAIParityPipeline(anthReq, &ctx)
 	}
 

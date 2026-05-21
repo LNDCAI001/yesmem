@@ -298,6 +298,18 @@ func executeSetup(home, dataDir, binaryPath, model, apiKey, provider, terminal s
 		return model, os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte(cfgContent), 0644)
 	})
 
+	// 2b. Bootstrap SYSTEM.md (if not present)
+	withSpinner("Writing system prompt template", func() (string, error) {
+		created, err := daemon.EnsureSystemPromptTemplate(dataDir)
+		if err != nil {
+			return "", err
+		}
+		if created {
+			return "created", nil
+		}
+		return "already exists", nil
+	})
+
 	// 3. Translate UI strings (best-effort, 10s timeout)
 	if lang != "en" && apiKey != "" {
 		withSpinner(fmt.Sprintf("Translating UI to %s", lang), func() (string, error) {
@@ -777,6 +789,11 @@ proxy:
   provider_targets:
     deepseek: "https://api.deepseek.com"
 
+  # Automatically discover and configure provider routing from opencode config.
+  # When true, yesmem reads opencode.json and models.json to auto-populate
+  # provider_targets and set baseURL for new providers. Set to false to disable.
+  auto_configure_providers: true
+
   # Compress when conversation context exceeds this token count.
   # Lower = more frequent compression (saves cost, loses more detail).
   # Higher = less frequent compression (better context, higher cost).
@@ -942,6 +959,15 @@ proxy:
       plan_checkpoint: true
       think_reminder: true
       timestamps: true
+
+  # --- Custom System Prompt ---
+  # Replaces the default system prompt with SYSTEM.md for supported pipelines.
+  # OpenCode and Claude Code pipelines each independently toggleable.
+  custom_system_prompt:
+    enabled_opencode: true
+    enabled_claude_code: true
+    enabled_codex: true
+    template_path: ~/.claude/yesmem/SYSTEM.md
 
 # --- Forked Agents (Background Learning Extraction) ---
 # Spawns async API calls after each assistant response to extract learnings,

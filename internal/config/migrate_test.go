@@ -42,7 +42,7 @@ func TestMigrateConfig_AddsEffortFloor(t *testing.T) {
 func TestMigrateConfig_SkipsExistingFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte("proxy:\n  enabled: true\n  skill_eval_inject: \"true\"\n  effort_floor: \"high\"\n  model_features:\n    claude:\n      skill_eval: true\n\npaths:\n  opencode_db: /custom/opencode.db\n\nexclude_projects:\n  - /home/testuser\n  - /tmp\n"), 0644)
+	os.WriteFile(path, []byte("proxy:\n  enabled: true\n  skill_eval_inject: \"true\"\n  effort_floor: \"high\"\n  auto_configure_providers: true\n  model_features:\n    claude:\n      skill_eval: true\n\npaths:\n  opencode_db: /custom/opencode.db\n\nexclude_projects:\n  - /home/testuser\n  - /tmp\n"), 0644)
 
 	n, err := MigrateConfig(path)
 	if err != nil {
@@ -50,6 +50,25 @@ func TestMigrateConfig_SkipsExistingFields(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("expected 0 fields added for fully migrated config, got %d", n)
+	}
+}
+
+func TestMigrateConfig_AddsAutoConfigureProviders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte("proxy:\n  enabled: true\n"), 0644)
+
+	n, err := MigrateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Error("expected at least one field added")
+	}
+
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "auto_configure_providers: true") {
+		t.Error("config should contain auto_configure_providers after migration")
 	}
 }
 
@@ -158,7 +177,7 @@ func TestMigrateConfig_AddsModelFeatures(t *testing.T) {
 func TestMigrateConfig_IdempotentModelFeatures(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte("proxy:\n  enabled: true\n  skill_eval_inject: \"silent\"\n  effort_floor: \"\"\n  model_features:\n    claude:\n      skill_eval: true\n\npaths:\n  opencode_db: /custom/opencode.db\n\nexclude_projects:\n  - /home/testuser\n  - /tmp\n"), 0644)
+	os.WriteFile(path, []byte("proxy:\n  enabled: true\n  skill_eval_inject: \"silent\"\n  effort_floor: \"\"\n  auto_configure_providers: true\n  model_features:\n    claude:\n      skill_eval: true\n\npaths:\n  opencode_db: /custom/opencode.db\n\nexclude_projects:\n  - /home/testuser\n  - /tmp\n"), 0644)
 
 	n, err := MigrateConfig(path)
 	if err != nil {

@@ -342,6 +342,36 @@ func TestParseOpenAIResponse_Error(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIResponse_SSE(t *testing.T) {
+	// SSE streaming response with multiple data chunks
+	body := []byte(strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"Hello"}}]}`,
+		`data: {"choices":[{"delta":{"content":" World"}}]}`,
+		`data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":1000,"completion_tokens":5,"prompt_cache_hit_tokens":800,"prompt_cache_miss_tokens":200}}`,
+		`data: [DONE]`,
+	}, "\n\n"))
+
+	resp, err := parseOpenAIResponse(body)
+	if err != nil {
+		t.Fatalf("parse SSE error: %v", err)
+	}
+	if resp.Usage.InputTokens != 1000 {
+		t.Errorf("expected 1000 input tokens, got %d", resp.Usage.InputTokens)
+	}
+	if resp.Usage.CacheReadInputTokens != 800 {
+		t.Errorf("expected 800 cache read, got %d", resp.Usage.CacheReadInputTokens)
+	}
+}
+
+func TestParseOpenAIResponse_SSE_Error(t *testing.T) {
+	body := []byte(`data: {"error":{"message":"rate limited"}}` + "\n\n" + `data: [DONE]`)
+
+	_, err := parseOpenAIResponse(body)
+	if err == nil {
+		t.Fatal("expected error for SSE error response")
+	}
+}
+
 func TestParseAnthropicResponse_Error(t *testing.T) {
 	body := []byte(`{
 		"error": {"type": "overloaded", "message": "too many requests"}
@@ -383,73 +413,89 @@ func TestNewExtractAndEvaluateConfig_AnthropicFormat(t *testing.T) {
 }
 
 func TestBuildForkRequest_PreservesBytePrefix_OpenAI(t *testing.T) {
-	// Verify that buildForkRequestOpenAI preserves the byte prefix identical
-	// to the main request (messages unchanged before fork prompt), appends
-	// the fork prompt as a user message, sets stream=false, and adds
-	// response_format for JSON output.
-	originalBody := []byte(`{"max_tokens":64000,"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"Hello"},{"role":"assistant","content":"Hi there"}],"model":"deepseek-v4-pro","stream":true,"tools":[{"type":"function","function":{"name":"Bash","parameters":{}}}]}`)
+	// The fork must preserve the EXACT byte order of the original request body.
+	// Go's json.Marshal(map) reorders keys alphabetically, breaking DeepSeek's
+	// prefix cache for requests with non-alphabetical key order.
+	// The fix uses bytes.Replace to swap only the messages array, keeping
+	// everything else byte-identical.
+	originalBody := []byte(`{
+		"stream": true,
+		"model": "deepseek-v4-flash",
+		"max_tokens": 8192,
+		"system": [{"type": "text", "text": "You are helpful."}],
+		"messages": [
+			{"role": "user", "content": "Hello"},
+			{"role": "assistant", "content": "Hi there"}
+		],
+		"tools": [{"name": "Bash"}]
+	}`)
 
 	cfg := ForkConfig{
-		Name:      "extract_test",
-		Model:     "",
+		Name:      "test_fork",
+		Model:     "",   // inherit from original body
 		MaxTokens: 3072,
-		Prompt:    func(ctx ForkContext) string { return "Extract learnings." },
+		Prompt: func(ctx ForkContext) string {
+			return "[FORK_PROMPT]"
+		},
 	}
 
-	ctx := ForkContext{
-		OriginalBody:      originalBody,
-		AssistantResponse: "",
-	}
-
-	result, err := buildForkRequest(ctx, cfg)
+	result, err := buildForkRequest(ForkContext{OriginalBody: originalBody}, cfg)
 	if err != nil {
 		t.Fatalf("buildForkRequest error: %v", err)
 	}
 
-	// Byte prefix before "messages" must be identical
-	origMsgIdx := bytes.Index(originalBody, []byte(`"messages"`))
-	forkMsgIdx := bytes.Index(result, []byte(`"messages"`))
-	if !bytes.Equal(originalBody[:origMsgIdx], result[:forkMsgIdx]) {
-		t.Errorf("cache prefix broken: orig=%q, fork=%q", originalBody[:origMsgIdx], result[:forkMsgIdx])
+	// Verify the result is valid JSON
+	if !json.Valid(result) {
+		t.Fatal("result is not valid JSON")
 	}
 
-	// Each ORIGINAL message must be byte-identical
-	type wrapper struct {
-		Messages []json.RawMessage `json:"messages"`
+	// Verify byte-identical prefix: everything before "messages" must match
+	origStr := string(originalBody)
+	resStr := string(result)
+	const key = `"messages"`
+	origIdx := strings.Index(origStr, key)
+	resIdx := strings.Index(resStr, key)
+	if origIdx < 0 || resIdx < 0 {
+		t.Fatal("messages key not found")
 	}
-	var origWrap, forkWrap wrapper
-	json.Unmarshal(originalBody, &origWrap)
-	json.Unmarshal(result, &forkWrap)
-
-	for i := range origWrap.Messages {
-		if !bytes.Equal(origWrap.Messages[i], forkWrap.Messages[i]) {
-			t.Errorf("message[%d] byte content changed: orig=%s fork=%s", i, origWrap.Messages[i], forkWrap.Messages[i])
+	if origStr[:origIdx] != resStr[:resIdx] {
+		// Show the difference
+		minLen := origIdx
+		if resIdx < minLen {
+			minLen = resIdx
+		}
+		for i := 0; i < minLen; i++ {
+			if origStr[i] != resStr[i] {
+				t.Errorf("byte-identical prefix broken at offset %d (%d bytes in)", i, len(origStr[:i]))
+				t.Logf("original prefix ends with: %q", origStr[max(0,i-30):i+30])
+				t.Logf("fork prefix ends with:      %q", resStr[max(0,i-30):i+30])
+				break
+			}
 		}
 	}
 
-	// Fork must have one extra message (the fork prompt)
-	if len(forkWrap.Messages) != len(origWrap.Messages)+1 {
-		t.Errorf("expected %d messages (orig +1), got %d", len(origWrap.Messages)+1, len(forkWrap.Messages))
+	// Messages must contain the fork prompt as last message
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	json.Unmarshal(result, &req)
+	if len(req.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(req.Messages))
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != "user" || last.Content != "[FORK_PROMPT]" {
+		t.Errorf("last message should be fork prompt, got %+v", last)
 	}
 
-	// Last message must be the fork prompt with role=user
-	var lastMsg struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}
-	json.Unmarshal(forkWrap.Messages[len(forkWrap.Messages)-1], &lastMsg)
-	if lastMsg.Role != "user" {
-		t.Errorf("expected last msg role=user, got %q", lastMsg.Role)
-	}
-	if lastMsg.Content != "Extract learnings." {
-		t.Errorf("expected fork prompt, got %q", lastMsg.Content)
-	}
-
-	// stream must be false
+	// stream must be preserved from original (not overridden to false)
+	// This is critical for DeepSeek prefix cache sharing with main thread.
 	var forkMap map[string]any
 	json.Unmarshal(result, &forkMap)
-	if forkMap["stream"] != false {
-		t.Errorf("expected stream=false, got %v", forkMap["stream"])
+	if forkMap["stream"] != true {
+		t.Errorf("expected stream=true (preserved from original), got %v", forkMap["stream"])
 	}
 }
 

@@ -19,6 +19,7 @@ type threadForkState struct {
 	forkCount           int
 	disabled            bool
 	forkPending         bool // prevents stacking fork calls before RecordFork completes
+	cacheWarmCount      int  // number of warm-cache main requests on this proxy instance
 }
 
 // NewForkState creates a ForkState with the given token growth trigger, minimum total tokens,
@@ -79,6 +80,23 @@ func (fs *ForkState) ShouldFork(threadID string, totalTokens int, hasCache bool)
 
 func (ts *threadForkState) maxForksReached(limit int) bool {
 	return limit > 0 && ts.forkCount >= limit
+}
+
+// MarkCacheWarm records a warm-cache main request for this session.
+// Thread-safe; may be called from multiple goroutines.
+func (fs *ForkState) MarkCacheWarm(threadID string) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	ts := fs.getOrCreate(threadID)
+	ts.cacheWarmCount++
+}
+
+// IsCacheProven returns true if the session has enough warm-cache proofs (>=2).
+func (fs *ForkState) IsCacheProven(threadID string) bool {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	ts, ok := fs.threads[threadID]
+	return ok && ts.cacheWarmCount >= 2
 }
 
 // RecordFork resets the token growth counter and failure count for a thread.

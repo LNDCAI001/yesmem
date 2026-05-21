@@ -679,6 +679,11 @@ var indices = []string{
 	`CREATE INDEX IF NOT EXISTS idx_lcs_cluster ON learning_cluster_scores(cluster_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project)`,
 	`CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status) WHERE status = 'running'`,
+	`CREATE INDEX IF NOT EXISTS idx_learnings_session ON learnings(session_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_learnings_canonical_cat ON learnings(canonical_project, category, superseded_by, created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_coverage_project_touched ON file_coverage(project, last_touched DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_pinned_project ON pinned_learnings(project)`,
+	`CREATE INDEX IF NOT EXISTS idx_assoc_relation ON associations(relation_type)`,
 }
 
 const tableClaudeMdState = `CREATE TABLE IF NOT EXISTS claudemd_state (

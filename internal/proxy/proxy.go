@@ -27,15 +27,16 @@ import (
 
 // Config holds proxy configuration.
 type Config struct {
-	ListenAddr            string         // e.g. ":9099"
-	TargetURL             string         // e.g. "https://api.anthropic.com"
-	TokenThreshold        int            // trigger stubbing above this estimated token count
-	TokenMinimumThreshold int            // stub down to this floor
-	TokenThresholds       map[string]int // model-specific thresholds: {"opus": 180000, "haiku": 130000}
-	KeepRecent            int            // number of messages to always keep unmodified
+	ListenAddr            string            // e.g. ":9099"
+	TargetURL             string            // e.g. "https://api.anthropic.com"
+	TokenThreshold        int               // trigger stubbing above this estimated token count
+	TokenMinimumThreshold int               // stub down to this floor
+	TokenThresholds       map[string]int    // model-specific thresholds: {"opus": 180000, "haiku": 130000}
+	KeepRecent            int               // number of messages to always keep unmodified
 	DataDir               string            // yesmem data directory for DB access
 	OpenAITargetURL       string            // upstream for OpenAI-format clients; if empty, uses TargetURL
 	ProviderTargets       map[string]string // per-provider upstream URLs, e.g. {"deepseek": "https://api.deepseek.com"}
+	AutoConfigureProviders bool              // enable auto-discovery of provider targets from opencode config
 
 	// Signal reflection
 	SignalsEnabled     bool   // enable async signal reflection calls
@@ -92,8 +93,19 @@ type Config struct {
 
 	// ModelFeatures: per-model behavioral feature gates (prefix-matched).
 	// Falls back to FeatureDefaults for models not listed.
-	ModelFeatures  map[string]*config.FeatureGates `yaml:"model_features"`
-	FeatureDefaults *config.FeatureGates           `yaml:"feature_defaults"`
+	ModelFeatures   map[string]*config.FeatureGates `yaml:"model_features"`
+	FeatureDefaults *config.FeatureGates            `yaml:"feature_defaults"`
+
+	// Custom system prompt: shared SYSTEM.md template for OpenCode and Claude Code pipelines.
+	CustomSystemPrompt CustomSystemPromptConfig
+}
+
+// CustomSystemPromptConfig controls which proxy pipelines use the SYSTEM.md template.
+type CustomSystemPromptConfig struct {
+	EnabledOpenCode   bool
+	EnabledClaudeCode bool
+	EnabledCodex      bool
+	TemplatePath      string
 }
 
 const maxAnnotations = 5000 // evict oldest when exceeded
@@ -113,6 +125,7 @@ const (
 // Server is the infinite-thread proxy.
 type Server struct {
 	cfg        Config
+	autoProviderTargets map[string]string // auto-discovered modelID → upstreamURL
 	httpClient *http.Client
 	logger     *log.Logger
 	version    string // build version for log tracing
@@ -231,6 +244,9 @@ type Server struct {
 	forkState   *ForkState
 	forkConfigs []ForkConfig
 
+	// Custom system prompt template for OpenCode (loaded from DataDir/SYSTEM.md)
+	customSystemPrompt []byte
+
 	// Rules re-injection: condensed CLAUDE.md rules injected every ~40k tokens
 	rulesMu               sync.RWMutex
 	rulesBlock            string          // cached condensed rules (fetched once from daemon)
@@ -291,6 +307,20 @@ func Run(cfg Config) error {
 		injectionOverhead:     make(map[string]int),
 		forkState:             NewForkState(cfg.ForkedAgentsTokenGrowthTrigger, 60000, cfg.ForkedAgentsMaxFailures, cfg.ForkedAgentsMaxForksPerSession),
 		forkConfigs:           []ForkConfig{},
+	}
+
+	// Load custom system prompt from configured path
+	if cfg.CustomSystemPrompt.TemplatePath != "" &&
+		(cfg.CustomSystemPrompt.EnabledOpenCode || cfg.CustomSystemPrompt.EnabledClaudeCode || cfg.CustomSystemPrompt.EnabledCodex) {
+		s.customSystemPrompt = loadSystemPromptFromPath(cfg.CustomSystemPrompt.TemplatePath)
+		if s.customSystemPrompt != nil {
+			s.logger.Printf("[proxy] loaded custom system prompt from %s (%d bytes, opencode=%v cc=%v codex=%v)",
+				cfg.CustomSystemPrompt.TemplatePath, len(s.customSystemPrompt),
+				cfg.CustomSystemPrompt.EnabledOpenCode, cfg.CustomSystemPrompt.EnabledClaudeCode, cfg.CustomSystemPrompt.EnabledCodex)
+		} else {
+			s.logger.Printf("[proxy] WARNING: custom_system_prompt enabled but template not found at %q — feature disabled",
+				cfg.CustomSystemPrompt.TemplatePath)
+		}
 	}
 
 	// Log persisted detection state
@@ -471,6 +501,13 @@ func Run(cfg Config) error {
 	} else {
 		s.tokenizer = tok
 		s.logger.Printf("[proxy] tokenizer initialized")
+	}
+
+	// Auto-discover provider targets from opencode config
+	if cfg.AutoConfigureProviders {
+		s.autoProviderTargets = runAutoDiscovery(s.logger)
+	} else {
+		s.logger.Printf("[proxy] auto_configure_providers is disabled — skipping auto-discovery")
 	}
 
 	mux := http.NewServeMux()
@@ -816,6 +853,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Profile-aware prompt flags: Claude profile merges shared_prompt + claude_prompt + legacy flat fields.
 	pfInject := s.getPromptFlags(models.ProfileClaude)
 
+	// CC custom system prompt replacement: must run before strip/rewrite so replaced blocks
+	// don't trigger false-positive strip/rewrite calls.
+	s.applyCCSystemPrompt(req)
+
 	// prompt_ungate: strip the CLAUDE.md subordination disclaimer so user instructions carry full authority.
 	if pfInject.Ungate {
 		if StripCLAUDEMDDisclaimer(req) {
@@ -826,47 +867,51 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// prompt_rewrite: strip output-throttling directives, rewrite quality caps, inject Ant-quality directives
 	if pfInject.Rewrite {
-		userAgent := r.Header.Get("User-Agent")
-		if StripOutputEfficiency(req) {
-			s.logger.Printf("[req %d] REWRITE: stripped Output efficiency section", reqIdx)
-			needsReserialization = true
-		} else {
-			s.logRewriteMiss("StripOutputEfficiency", userAgent)
-		}
-		if StripToneBrevity(req) {
-			s.logger.Printf("[req %d] REWRITE: stripped 'short and concise' from Tone", reqIdx)
-			needsReserialization = true
-		} else {
-			s.logRewriteMiss("StripToneBrevity", userAgent)
-		}
-		if RewriteGoldPlating(req) {
-			s.logger.Printf("[req %d] REWRITE: rewritten gold-plating directive", reqIdx)
-			needsReserialization = true
-		}
-		if RewriteErrorHandling(req) {
-			s.logger.Printf("[req %d] REWRITE: rewritten error handling directive", reqIdx)
-			needsReserialization = true
-		}
-		if RewriteThreeLinesRule(req) {
-			s.logger.Printf("[req %d] REWRITE: rewritten three-lines rule", reqIdx)
-			needsReserialization = true
-		}
-		if RewriteSubagentCompleteness(req) {
-			s.logger.Printf("[req %d] REWRITE: rewritten subagent completeness", reqIdx)
-			needsReserialization = true
-		}
-		if RewriteExploreAgentSpeed(req) {
-			s.logger.Printf("[req %d] REWRITE: rewritten explore agent speed bias", reqIdx)
-			needsReserialization = true
-		}
-		if RewriteSubagentCodeSuppression(req) {
-			s.logger.Printf("[req %d] REWRITE: rewritten subagent code suppression", reqIdx)
-			needsReserialization = true
-		}
-		if RewriteScopeMatching(req) {
-			s.logger.Printf("[req %d] REWRITE: rewritten scope matching", reqIdx)
-			needsReserialization = true
-		}
+		// When CC custom system prompt is active, the system prompt has been replaced with SYSTEM.md.
+		// Strip/rewrite calls would not find their target strings — skip to avoid log noise.
+		if !s.cfg.CustomSystemPrompt.EnabledClaudeCode {
+			userAgent := r.Header.Get("User-Agent")
+			if StripOutputEfficiency(req) {
+				s.logger.Printf("[req %d] REWRITE: stripped Output efficiency section", reqIdx)
+				needsReserialization = true
+			} else {
+				s.logRewriteMiss("StripOutputEfficiency", userAgent)
+			}
+			if StripToneBrevity(req) {
+				s.logger.Printf("[req %d] REWRITE: stripped 'short and concise' from Tone", reqIdx)
+				needsReserialization = true
+			} else {
+				s.logRewriteMiss("StripToneBrevity", userAgent)
+			}
+			if RewriteGoldPlating(req) {
+				s.logger.Printf("[req %d] REWRITE: rewritten gold-plating directive", reqIdx)
+				needsReserialization = true
+			}
+			if RewriteErrorHandling(req) {
+				s.logger.Printf("[req %d] REWRITE: rewritten error handling directive", reqIdx)
+				needsReserialization = true
+			}
+			if RewriteThreeLinesRule(req) {
+				s.logger.Printf("[req %d] REWRITE: rewritten three-lines rule", reqIdx)
+				needsReserialization = true
+			}
+			if RewriteSubagentCompleteness(req) {
+				s.logger.Printf("[req %d] REWRITE: rewritten subagent completeness", reqIdx)
+				needsReserialization = true
+			}
+			if RewriteExploreAgentSpeed(req) {
+				s.logger.Printf("[req %d] REWRITE: rewritten explore agent speed bias", reqIdx)
+				needsReserialization = true
+			}
+			if RewriteSubagentCodeSuppression(req) {
+				s.logger.Printf("[req %d] REWRITE: rewritten subagent code suppression", reqIdx)
+				needsReserialization = true
+			}
+			if RewriteScopeMatching(req) {
+				s.logger.Printf("[req %d] REWRITE: rewritten scope matching", reqIdx)
+				needsReserialization = true
+			}
+		} // end !EnabledClaudeCode guard
 		InjectAntDirectives(req)
 		s.logger.Printf("[req %d] REWRITE: injected Ant-quality directives", reqIdx)
 		needsReserialization = true
@@ -1786,6 +1831,13 @@ func (s *Server) resolveOpenAITarget(model string) string {
 			}
 		}
 	}
+	// Auto-discovered targets (secondary — explicit provider_targets takes priority)
+	if len(s.autoProviderTargets) > 0 {
+		if url, ok := s.autoProviderTargets[modelLower]; ok && url != "" {
+			return url
+		}
+	}
+
 	if s.cfg.OpenAITargetURL != "" {
 		return s.cfg.OpenAITargetURL
 	}

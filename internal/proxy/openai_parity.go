@@ -748,8 +748,16 @@ func (s *Server) forwardOpenAIWithTracking(w http.ResponseWriter, origReq *http.
 	// Fire forked agents (async, fire-and-forget) — same logic as proxy_forward.go.
 	if usage.Complete && usage.CacheReadInputTokens > 0 && !s.forkState.IsDisabled(threadID) && isRealUserSession(threadID) {
 		totalTokens := usage.TotalInputTokens()
-		hasCache := usage.CacheReadInputTokens > 0
-		if s.forkState.ShouldFork(threadID, totalTokens, hasCache) {
+		cacheRatio := 0.0
+		if totalTokens > 0 {
+			cacheRatio = float64(usage.CacheReadInputTokens) / float64(totalTokens)
+		}
+		hasCache := cacheRatio > 0.9
+		cacheProven := s.forkState.IsCacheProven(threadID)
+		if hasCache {
+			s.forkState.MarkCacheWarm(threadID)
+		}
+		if hasCache && cacheProven && s.forkState.ShouldFork(threadID, totalTokens, hasCache) {
 			go s.fireForkedAgents(ForkContext{
 				OriginalBody:      body,
 				AssistantResponse: textAccum.String(),

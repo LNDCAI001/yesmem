@@ -251,9 +251,15 @@ export function ruleGuardHook(directory: string) {
       if (!suggestableTools.has(toolName)) { dbgLog("guard", `SKIP-UNSUG ${toolName}`); return; }
 
       const filePath = args?.filePath || args?.file_path || args?.path || "";
-      if (filePath && (filePath.endsWith("RULES.md") || filePath.endsWith("rule_guard.ts"))) { dbgLog("guard", `SKIP-SELF ${filePath}`); return; }
+        if (filePath && (filePath.endsWith("RULES.md") || filePath.endsWith("rule_guard.ts"))) { dbgLog("guard", `SKIP-SELF ${filePath}`); return; }
 
-      let context = `Tool: ${toolName}, Args: ${JSON.stringify(args).substring(0, 300)}`;
+        const docExts = /\.(md|txt|rst|pdf)(\*|$|,)/;
+        const isDocTarget = docExts.test(filePath)
+          || (toolName === "grep" && docExts.test(args?.include || ""))
+          || (toolName === "glob" && docExts.test(args?.pattern || ""));
+        if (isDocTarget) { dbgLog("guard", `SKIP-DOC tool=${toolName} filePath=${filePath} include=${args?.include || ""} pattern=${args?.pattern || ""}`); return; }
+
+        let context = `Tool: ${toolName}, Args: ${JSON.stringify(args).substring(0, 300)}`;
       if (recentConversation.length > 0) {
         context += `\nRecent conversation:\n${recentConversation.join("\n")}`;
         const lastUser = recentConversation.filter(m => m.startsWith("[user]:")).pop() || "";
@@ -262,11 +268,11 @@ export function ruleGuardHook(directory: string) {
         }
       }
 
-      if (filePath && filePath.endsWith("_test.go")) {
-        context += `\nNOTE: This is a test file ("_test.go"). Writing test files before implementation IS TDD-compliant — do not BLOCK under TDD/test-first rules.`;
-      }
+        if (filePath && filePath.endsWith("_test.go")) {
+          context += `\nNOTE: This is a test file ("_test.go"). Writing test files before implementation IS TDD-compliant — do not BLOCK under TDD/test-first rules.`;
+        }
 
-      if (gitBranch) {
+        if (gitBranch) {
         context += `\nGit branch: ${gitBranch} (feature branch rules 4, 42 are satisfied — no need to suggest worktree/branch skills)`;
       }
 

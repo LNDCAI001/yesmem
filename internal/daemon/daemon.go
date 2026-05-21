@@ -166,6 +166,7 @@ func Run(cfg Config) error {
 	// ━━━ Socket server FIRST — MCP available immediately ━━━
 	handler := NewHandler(store, bloomMgr)
 	handler.dataDir = cfg.DataDir
+	handler.RebuildFromPIDFiles()
 	if ac != nil {
 		handler.agentTerminal = ac.Agents.Terminal
 		if ac.Agents.MaxRuntime != "" {

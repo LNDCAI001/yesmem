@@ -104,6 +104,7 @@ type ProxyConfig struct {
 	Target                   string         `yaml:"target"`                     // target API URL, e.g. "https://api.anthropic.com"
 	OpenAITarget             string            `yaml:"openai_target"`              // upstream for OpenAI-format clients (default: "https://api.openai.com")
 	ProviderTargets          map[string]string `yaml:"provider_targets"`           // per-provider upstream, e.g. deepseek: "https://api.deepseek.com"
+	AutoConfigureProviders   bool              `yaml:"auto_configure_providers"`  // auto-discover provider targets from opencode config (default: true)
 	TokenThreshold           int            `yaml:"token_threshold"`            // trigger stubbing above this token count (default: 180000)
 	TokenMinimumThreshold    int            `yaml:"token_minimum_threshold"`    // stub down to this floor (default: 80000)
 	KeepRecent               int            `yaml:"keep_recent"`                // messages to always keep unmodified
@@ -122,33 +123,33 @@ type ProxyConfig struct {
 	PromptDelegationContract bool           `yaml:"prompt_delegation_contract"` // [deprecated] use claude_prompt.prompt_delegation_contract
 	PromptClarifyFirst       bool           `yaml:"prompt_clarify_first"`       // [deprecated] use claude_prompt.prompt_clarify_first
 	PromptCodeToolsFirst     bool           `yaml:"prompt_code_tools_first"`    // [deprecated] use claude_prompt.prompt_code_tools_first
-	PromptWikiFirst          bool           `yaml:"prompt_wiki_first"`           // [deprecated] use claude_prompt.prompt_wiki_first
+	PromptWikiFirst          bool           `yaml:"prompt_wiki_first"`          // [deprecated] use claude_prompt.prompt_wiki_first
 	PromptPatternSuggest     bool           `yaml:"prompt_pattern_suggest"`     // [deprecated] use claude_prompt.prompt_pattern_suggest
 	EffortFloor              string         `yaml:"effort_floor"`               // minimum effort level: "low", "medium", "high", "max" (default: "" = off)
 	SkillEvalInject          string         `yaml:"skill_eval_inject"`          // "true" = verbose eval output, "silent" = internal eval only, "false" = disabled (default: "silent")
+	CacheKeepaliveEnabled    bool                `yaml:"cache_keepalive_enabled"`
+	CacheKeepaliveMode       string              `yaml:"cache_keepalive_mode"`       // "auto", "5m", "1h"
+	CacheKeepalivePings5m    int                 `yaml:"cache_keepalive_pings_5m"`
+	CacheKeepalivePings1h    int                 `yaml:"cache_keepalive_pings_1h"`
+	CacheKeepaliveMinMessages int                `yaml:"cache_keepalive_min_messages"`
+	ResetCache               bool                `yaml:"reset_cache"`
+	CodeNavMode              string              `yaml:"code_nav_mode"`
+	CodeNavDismissCount      int                 `yaml:"code_nav_dismiss_count"`
+	SharedPrompt             *PromptFlags        `yaml:"shared_prompt"`
+	ClaudePrompt             *PromptFlags        `yaml:"claude_prompt"`
+	CodexPrompt              *PromptFlags        `yaml:"codex_prompt"`
+	OpencodePrompt           *PromptFlags        `yaml:"opencode_prompt"`
+	ModelFeatures            map[string]*FeatureGates `yaml:"model_features"`
+	FeatureDefaults          *FeatureGates            `yaml:"feature_defaults"`
+	CustomSystemPrompt       CustomSystemPromptConfig `yaml:"custom_system_prompt"`
+}
 
-	CacheKeepaliveEnabled     bool   `yaml:"cache_keepalive_enabled"`      // send keepalive pings to prevent cache expiry (default: true)
-	CacheKeepaliveMode        string `yaml:"cache_keepalive_mode"`          // "auto" (detect from response), "5m", "1h" (default: "5m")
-	CacheKeepalivePings5m     int    `yaml:"cache_keepalive_pings_5m"`     // pings per idle phase when TTL=5min (default: 5)
-	CacheKeepalivePings1h     int    `yaml:"cache_keepalive_pings_1h"`     // pings per idle phase when TTL=1h (default: 1)
-	CacheKeepaliveMinMessages int    `yaml:"cache_keepalive_min_messages"` // skip keepalive when request has fewer messages (default: 10)
-
-	CodeNavMode         string `yaml:"code_nav_mode"`          // "block", "nudge", or "off" (default: "block")
-	CodeNavDismissCount int    `yaml:"code_nav_dismiss_count"` // permanent-off after N dismissals (default: 5)
-
-	// Profile-aware prompt flags (preferred over deprecated flat fields above).
-	// SharedPrompt is the base layer for all profiles.
-	// Profile-specific fields override SharedPrompt defaults.
-	SharedPrompt   *PromptFlags `yaml:"shared_prompt"`
-	ClaudePrompt   *PromptFlags `yaml:"claude_prompt"`   // defaults inherited from deprecated flat fields
-	CodexPrompt    *PromptFlags `yaml:"codex_prompt"`    // OpenAI/Codex-specific overrides
-	OpencodePrompt *PromptFlags `yaml:"opencode_prompt"` // opencode-specific overrides
-
-	// ModelFeatures enables per-model behavioral feature gates.
-	// Keys are model name prefixes matched case-insensitively (longest prefix wins).
-	// Falls back to FeatureDefaults for models not listed.
-	ModelFeatures  map[string]*FeatureGates `yaml:"model_features"`
-	FeatureDefaults *FeatureGates           `yaml:"feature_defaults"`
+// CustomSystemPromptConfig controls which pipelines get the SYSTEM.md template injection.
+type CustomSystemPromptConfig struct {
+	EnabledOpenCode   bool   `yaml:"enabled_opencode"`
+	EnabledClaudeCode bool   `yaml:"enabled_claude_code"`
+	EnabledCodex      bool   `yaml:"enabled_codex"`
+	TemplatePath      string `yaml:"template_path"`
 }
 
 // FeatureGates controls which yesmem behavioral features are active
@@ -401,6 +402,7 @@ func Default() *Config {
 			Listen:                   ":9099",
 			Target:                   "https://api.anthropic.com",
 			OpenAITarget:             "https://api.openai.com",
+			AutoConfigureProviders:   true,
 			TokenThreshold:           250000,
 			TokenMinimumThreshold:    100000,
 			KeepRecent:               10,
@@ -452,6 +454,12 @@ func Default() *Config {
 				"haiku":  130000,
 				"gpt-5":  180000,
 				"codex":  180000,
+			},
+			CustomSystemPrompt: CustomSystemPromptConfig{
+				EnabledOpenCode:   true,
+				EnabledClaudeCode: false,
+				EnabledCodex:      false,
+				TemplatePath:      "~/.claude/yesmem/SYSTEM.md",
 			},
 		},
 		Signals: SignalsConfig{

@@ -30,6 +30,13 @@ var proxyMigrations = []configMigration{
   # effort_floor: ""
 `,
 	},
+	{
+		key: "auto_configure_providers",
+		snippet: `
+    # Automatically discover and configure provider routing from opencode config.
+    auto_configure_providers: true
+`,
+	},
 }
 
 const opencodeDBKey = "opencode_db"

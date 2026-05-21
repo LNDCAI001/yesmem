@@ -39,6 +39,7 @@ func runProxy() {
 		KeepRecent:            cfg.Proxy.KeepRecent,
 		DataDir:               dataDir,
 		OpenAITargetURL:       cfg.Proxy.OpenAITarget,
+		AutoConfigureProviders: cfg.Proxy.AutoConfigureProviders,
 		ProviderTargets:       cfg.Proxy.ProviderTargets,
 		// Signal reflection
 		SignalsEnabled:     cfg.Signals.Enabled,
@@ -80,6 +81,12 @@ func runProxy() {
 		// Per-model feature gates
 		ModelFeatures:  cfg.Proxy.ModelFeatures,
 		FeatureDefaults: cfg.Proxy.FeatureDefaults,
+		CustomSystemPrompt: proxy.CustomSystemPromptConfig{
+			EnabledOpenCode:   cfg.Proxy.CustomSystemPrompt.EnabledOpenCode,
+			EnabledClaudeCode: cfg.Proxy.CustomSystemPrompt.EnabledClaudeCode,
+			EnabledCodex:      cfg.Proxy.CustomSystemPrompt.EnabledCodex,
+			TemplatePath:      cfg.Proxy.CustomSystemPrompt.TemplatePath,
+		},
 	}
 
 	// CLI overrides

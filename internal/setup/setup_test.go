@@ -86,6 +86,9 @@ func TestGenerateConfigOpencodeProvider(t *testing.T) {
 	if !strings.Contains(cfg, "deepseek: \"https://api.deepseek.com\"") {
 		t.Fatalf("config missing provider_targets.deepseek: %s", cfg)
 	}
+	if !strings.Contains(cfg, "auto_configure_providers: true") {
+		t.Fatalf("config missing auto_configure_providers: %s", cfg)
+	}
 	// Opencode has no API key field
 	if strings.Contains(cfg, "openai_api_key:") {
 		t.Fatalf("opencode config should not contain openai_api_key: %s", cfg)

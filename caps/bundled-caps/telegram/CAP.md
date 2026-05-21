@@ -1,7 +1,7 @@
 ---
 name: telegram
 description: "Bidirectional Telegram messaging via Bot API — send messages, poll for updates, reply via headless agent."
-version: 166
+version: 168
 tags: [telegram, bot, messaging]
 scope: user
 auto_active: true
@@ -36,7 +36,7 @@ if [ -z "$TOKEN" ]; then printf '[%s] poll: no bot_token\n' "$(date -Is)" >> /tm
 
 OFFSET=$(store '{"capability":"telegram","action":"query","table":"config","where":"key=?","args":["offset"],"limit":1}' | yesmem json -r '.rows[0].value // "0"')
 
-RESPONSE=$(curl -4 -sS -m 12 "https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${OFFSET}&timeout=8")
+RESPONSE=$(curl -4 -sS -m 14 "https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${OFFSET}&timeout=12")
 RET=$?
 if [ $RET -ne 0 ]; then printf '[%s] poll: curl failed exit=%s\n' "$(date -Is)" "$RET" >> /tmp/tpoll.log; exit 0; fi
 
@@ -48,7 +48,10 @@ fi
 
 printf '[%s] poll: %s updates\n' "$(date -Is)" "$COUNT" >> /tmp/tpoll.log
 MAX_ID=$OFFSET
+N=0
 for i in $(seq 0 $((COUNT - 1))); do
+  N=$((N + 1))
+  if [ $N -gt 50 ]; then printf '[%s] poll: LIMIT 50 reached, deferring remaining\n' "$(date -Is)" >> /tmp/tpoll.log; break; fi
   UPDATE=$(echo "$RESPONSE" | yesmem json ".result[$i]")
   UPD_ID=$(echo "$UPDATE" | yesmem json -r '.update_id')
   PAYLOAD=$(echo "$UPDATE" | yesmem json '{capability:"telegram",action:"upsert",table:"updates",data:{telegram_id:.update_id,chat_id:.message.chat.id,sender:(.message.from.first_name // "unknown"),text:(.message.text // ""),direction:"in",processed:0,date:.message.date}}')
@@ -69,19 +72,17 @@ kind: handler
 exec 2>>/tmp/treply.log
 printf '[%s] reply: check\n' "$(date -Is)" >> /tmp/treply.log
 
-MSG=$(store '{"capability":"telegram","action":"query","table":"updates","where":"processed=0","limit":1}')
-COUNT=$(echo "$MSG" | yesmem json '.count')
-if [ -z "$COUNT" ] || [ "$COUNT" = "0" ] || [ "$COUNT" = "null" ]; then
+CLAIM=$(store '{"capability":"telegram","action":"claim_and_read","table":"updates","where":"processed=0","order":"id ASC","set":{"processed":1},"returning":["id","chat_id","sender","text"]}')
+CLAIMED=$(echo "$CLAIM" | yesmem json -r '.claimed')
+if [ "$CLAIMED" != "true" ]; then
+  printf '[%s] reply: no pending\n' "$(date -Is)" >> /tmp/treply.log
   exit 0
 fi
 
-ROW_ID=$(echo "$MSG" | yesmem json '.rows[0].id')
-TEXT=$(echo "$MSG" | yesmem json -r '.rows[0].text')
-SENDER=$(echo "$MSG" | yesmem json -r '.rows[0].sender')
+ROW_ID=$(echo "$CLAIM" | yesmem json '.row.id')
+TEXT=$(echo "$CLAIM" | yesmem json -r '.row.text')
+SENDER=$(echo "$CLAIM" | yesmem json -r '.row.sender')
 printf '[%s] reply: replying row=%s sender=%s text=%s\n' "$(date -Is)" "$ROW_ID" "$SENDER" "${TEXT:0:80}" >> /tmp/treply.log
-
-MARK_PAYLOAD=$(yesmem json -n --argjson id "$ROW_ID" '{capability:"telegram",action:"upsert",table:"updates",data:{id:$id,processed:1}}')
-echo "$MARK_PAYLOAD" | while IFS= read -r p; do store "$p" > /dev/null; done
 
 CHAT_ID=$(store '{"capability":"telegram","action":"query","table":"config","where":"key=?","args":["chat_id"],"limit":1}' | yesmem json -r '.rows[0].value')
 MODEL=$(store '{"capability":"telegram","action":"query","table":"config","where":"key=?","args":["reply_model"],"limit":1}' | yesmem json -r '.rows[0].value // "claude-sonnet-4-6"')

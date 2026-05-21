@@ -152,10 +152,11 @@ func Uninstall() error {
 		fmt.Println("✓")
 	}
 
-	// Remove PID + socket
+	// Remove PID + socket + session tracking files
 	fmt.Print("  Cleaning runtime files... ")
 	os.Remove(filepath.Join(dataDir, "daemon.sock"))
 	os.Remove(filepath.Join(dataDir, "daemon.pid"))
+	os.RemoveAll(filepath.Join(dataDir, "sessions"))
 	fmt.Println("✓")
 
 	// Optionally delete data

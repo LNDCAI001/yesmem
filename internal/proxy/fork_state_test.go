@@ -4,6 +4,7 @@ import "testing"
 
 func TestForkState_TokenGrowthDelta(t *testing.T) {
 	fs := NewForkState(20000, 0, 3, 50) // 20k trigger, max 3 failures, 50 max forks
+	fs.MarkCacheWarm("thread-1")
 
 	// First call establishes baseline — no fork
 	if fs.ShouldFork("thread-1", 10000, true) {
@@ -35,6 +36,7 @@ func TestForkState_TokenGrowthDelta(t *testing.T) {
 func TestForkState_AbsoluteTokensNotAccumulated(t *testing.T) {
 	// Regression test: ShouldFork must use delta, not accumulate absolute values
 	fs := NewForkState(20000, 0, 3, 50)
+	fs.MarkCacheWarm("t1")
 
 	// Simulate realistic API call pattern: 100k context, growing slowly
 	fs.ShouldFork("t1", 100000, true) // baseline
@@ -71,6 +73,7 @@ func TestForkState_FailureDisable(t *testing.T) {
 
 func TestForkState_SuccessResetsFailures(t *testing.T) {
 	fs := NewForkState(20000, 0, 3, 50)
+	fs.MarkCacheWarm("thread-1")
 
 	fs.RecordFailure("thread-1")
 	fs.RecordFailure("thread-1")
@@ -92,6 +95,7 @@ func TestForkState_NoCacheNoFork(t *testing.T) {
 
 func TestForkState_DisabledSkipsAccumulation(t *testing.T) {
 	fs := NewForkState(20000, 0, 3, 50)
+	fs.MarkCacheWarm("t1")
 
 	// Disable thread
 	fs.RecordFailure("t1")
@@ -114,6 +118,7 @@ func TestForkState_DisabledSkipsAccumulation(t *testing.T) {
 
 func TestForkState_MaxForksPerSession(t *testing.T) {
 	fs := NewForkState(1000, 0, 3, 3) // low trigger, max 3 forks
+	fs.MarkCacheWarm("t1")
 
 	// Fork 3 times
 	fs.ShouldFork("t1", 5000, true)
@@ -131,6 +136,7 @@ func TestForkState_MaxForksPerSession(t *testing.T) {
 
 func TestForkState_ForkPendingPreventsStacking(t *testing.T) {
 	fs := NewForkState(10000, 0, 3, 0)
+	fs.MarkCacheWarm("t1")
 
 	if !fs.ShouldFork("t1", 50000, true) {
 		t.Fatal("first fork should fire (50k tokens)")
@@ -149,6 +155,7 @@ func TestForkState_ForkPendingPreventsStacking(t *testing.T) {
 
 func TestForkState_RecordFailureResetsTokenGrowth(t *testing.T) {
 	fs := NewForkState(20000, 0, 3, 50)
+	fs.MarkCacheWarm("t")
 
 	// First fork: 25k tokens, enough to trigger
 	if !fs.ShouldFork("t", 25000, true) {
@@ -172,6 +179,7 @@ func TestForkState_RecordFailureResetsTokenGrowth(t *testing.T) {
 
 func TestForkState_MinTotalTokens_PreventsSmallSessionForks(t *testing.T) {
 	fs := NewForkState(20000, 60000, 3, 50)
+	fs.MarkCacheWarm("t")
 
 	// Session at 25k with 20k growth: growth satisfied but total < 60k
 	if fs.ShouldFork("t", 25000, true) {
@@ -192,9 +200,71 @@ func TestForkState_MinTotalTokens_PreventsSmallSessionForks(t *testing.T) {
 
 func TestForkState_MinTotalTokens_ZeroAllowsAll(t *testing.T) {
 	fs := NewForkState(20000, 0, 3, 50)
+	fs.MarkCacheWarm("t")
 
 	// min=0: any session can fork immediately at 20k growth
 	if !fs.ShouldFork("t", 25000, true) {
 		t.Error("fork should fire: minTotalTokens=0 disables the minimum check")
+	}
+}
+
+func TestForkState_CacheProvenGate(t *testing.T) {
+	// After a deploy, no session has proven cache warmth.
+	// The caller (openai_parity.go) must check IsCacheProven before ShouldFork.
+	fs := NewForkState(20000, 0, 3, 50)
+
+	// Session with enough growth and hasCache=true, but cache NOT yet proven
+	// Caller-side gate: IsCacheProven is false → skip ShouldFork entirely
+	if fs.IsCacheProven("t1") {
+		t.Error("new session should NOT be cache-proven")
+	}
+	// This demonstrates the caller pattern: only call ShouldFork if cache is proven
+	if fs.IsCacheProven("t1") && fs.ShouldFork("t1", 25000, true) {
+		t.Error("should NOT fork: cache not yet proven")
+	}
+
+	// Mark cache as proven (happens when a main request returns cacheRatio > 0.9)
+	// Cache must be proven twice before a fork is allowed
+	fs.MarkCacheWarm("t1")
+	fs.MarkCacheWarm("t1")
+
+	// Now the caller sees IsCacheProven=true and ShouldFork returns true with sufficient growth
+	if !fs.IsCacheProven("t1") {
+		t.Error("t1 should be cache-proven after MarkCacheWarm")
+	}
+	if !fs.ShouldFork("t1", 25000, true) {
+		t.Error("should fork: cache proven + hasCache=true + growth=25k")
+	}
+}
+
+func TestForkState_CacheProvenResetsOnNewState(t *testing.T) {
+	// When ForkState is freshly created (after deploy), no sessions are cache-proven.
+	fs := NewForkState(20000, 0, 3, 50)
+	if fs.IsCacheProven("t1") {
+		t.Error("new ForkState should have no cache-proven sessions")
+	}
+}
+
+func TestForkState_CacheProvenPerSession(t *testing.T) {
+	fs := NewForkState(20000, 0, 3, 50)
+
+	// Prove cache twice for t1
+	fs.MarkCacheWarm("t1")
+	fs.MarkCacheWarm("t1")
+	if !fs.IsCacheProven("t1") {
+		t.Error("t1 should be cache-proven after MarkCacheWarm")
+	}
+
+	// t2 is NOT cache-proven
+	if fs.IsCacheProven("t2") {
+		t.Error("t2 should NOT be cache-proven (never marked)")
+	}
+
+	// Caller pattern: t1 can fork (cache proven), t2 cannot (not proven)
+	if !fs.IsCacheProven("t1") || !fs.ShouldFork("t1", 25000, true) {
+		t.Error("t1 should fork: cache proven")
+	}
+	if fs.IsCacheProven("t2") && fs.ShouldFork("t2", 25000, true) {
+		t.Error("t2 should NOT fork: cache not proven")
 	}
 }

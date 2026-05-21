@@ -391,3 +391,13 @@ A declarative rule file with 30+ rules and a skill catalog. Rules are evaluated 
 **Self-correcting:** Rules are not static. When a rule blocks incorrectly, the rule is rewritten based on what actually works. Snapshot tracking via content hashes detects drift.
 
 **Performance:** Thinking mode disabled for guard evaluation (`thinking: {type: disabled}`). Dedicated skipt-list for doc-target calls (`.md`, `.txt`, `.rst`, `.pdf` files) — no LLM evaluation needed.
+
+### OpenCode Plugin Lifecycle
+
+- **Non-destructive setup:** `mergeOpencodeSettings()` preserves existing user configuration during `yesmem setup` — provider, model, and MCP settings are merged without overwriting.
+- **Auto-update via migration:** `InstallOpencodePlugin()` runs during `yesmem update` — SHA256 comparison ensures only changed plugin files are written.
+- **Git branch awareness:** The rule_guard detects the current git branch via `getGitBranch()` and includes it in the evaluation context — suppressing false feature-branch suggestions (e.g., no need to suggest worktree/branch skills on a feature branch).
+
+### Project Exclusion
+
+- **`exclude_projects` config:** Projects can be excluded from session indexing by adding them to `exclude_projects` in config.yaml. Prevents noise directories from being tracked.

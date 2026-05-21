@@ -317,3 +317,15 @@ Per-million-token pricing for budget tracking. Configurable without rebuild.
 ---
 
 > **See also:** `config.example.yaml` in repo root (abridged version with inline comments).
+
+### exclude_projects — Project Exclusion
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `exclude_projects` | []string | `[]` | Projects to exclude from session indexing. Prevents noise directories from being tracked. |
+
+### caps_dir — CAP Storage
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `caps_dir` | string | `~/.claude/caps/` | Directory for CAP.md capability files. Runtime-agnostic storage for reusable tool definitions. |

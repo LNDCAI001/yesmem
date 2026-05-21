@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restore max_context.png to docs/images/ (lost in yesdocs split)
 - Restore missing YesMemRPC import in index.ts
 - Per-model token threshold override + DeepSeek 500k default
 - Add deepseek pricing entries, raise quality budget to 0
@@ -45,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Add 7 missing features from commit audit — excludeProjects, claim_and_read, staus/uninstall, guard git context, opencode merge/update, caps_dir
 - Commit audit May 5-21 — 7 missing features found, 4 removed, 18 documented
 - Update Features.md overview counts (70 tools, 64 commands, 130 rpc, 48 tables)
 - Rewrite reference docs — mcp (70 tools), cli (64 commands), rpc (130 methods), db (48 tables + 4 FTS5)

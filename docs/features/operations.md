@@ -332,6 +332,11 @@ What makes YesMem fundamentally different — not "also does X", but "nobody els
 14. **Orthogonal Scoring** — Five independent counters (use, citation, retrieval, injection, feedback) prevent a learning from becoming "important" just because it was retrieved often. A learning that gets injected 50 times but never cited is noise, not signal.
 15. **Persona Continuity** — Not just fact storage — a persistent identity model that evolves across sessions. Traits, preferences, communication style, expertise areas. Session 1036 knows who you are because sessions 1–1035 built that understanding incrementally.
 
+### Project Exclusion
+
+- **`exclude_projects`:** Projects can be excluded from session indexing and extraction by adding them to `exclude_projects: []` in config.yaml. Applies to both the indexer and the opencode scanner. Useful for build directories, temporary projects, or noise-heavy repositories.
+
+
 ## 8. Scheduled Agents
 
 Cron-based task scheduler built into the daemon. Define recurring or one-shot jobs that spawn agents automatically.

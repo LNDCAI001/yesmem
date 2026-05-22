@@ -12,6 +12,14 @@ You must respond with exactly ONE word:
 ## Rules
 The following rules are non-negotiable. Evaluate each tool call against EVERY rule.
 
+## Decision Policy
+
+The guard sees only one tool call without conversation context — tool authorization ("user said commit this") is invisible. To avoid false BLOCKs on user-authorized operations:
+
+- **BLOCK** only on objectively detectable violations from the tool input alone: LLM signature in commit message text (part of rule 1), secrets in diff (rule 2), destructive bash patterns (rule 25, e.g. `rm -rf /`, `git push --force` to a protected branch, `DROP TABLE` without backup).
+- **SUGGEST** with mandatory check on rules where authorization or external state matters: auto-commit detection (rule 1), pre-push test verification (rule 3), main-branch protection (rule 4), commit message format (rule 5). Suggestion format: `yesmem-remember: <what to verify>` or `<skill-name>: <reason>`.
+- **PASS** when no rule applies.
+
 ## Commits & Git
 1. Never auto-commit without explicit user instruction. Commits are the user's decision — only commit when the user explicitly asks. No LLM signature in commit messages.
 2. Never commit secrets, API keys, credentials, or environment files (.env) to the repository.

@@ -261,6 +261,8 @@ func registerHooks(settings map[string]any, binaryPath string) {
 
 	// PreToolUse — warn about known gotchas before Bash execution
 	addPreToolUseHook(hooks, binaryPath)
+	// PreToolUse — evaluate tool calls against RULES.md via LLM
+	addPreToolUseGuardHook(hooks, binaryPath)
 
 	// PostToolUseFailure — unified hook (learn + assist combined)
 	addPostToolUseFailureCombinedHook(hooks, binaryPath)
@@ -430,6 +432,44 @@ func addPreToolUseHook(hooks map[string]any, binaryPath string) {
 
 	existing = append(existing, map[string]any{
 		"matcher": ".*",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": hookCmd,
+			},
+		},
+	})
+	hooks["PreToolUse"] = existing
+}
+
+// hookGuardMatcher is the canonical PreToolUse matcher for `yesmem hook-guard`.
+// Bumping this string upgrades existing installations on the next `yesmem update`.
+const hookGuardMatcher = "Bash|REPL|Edit|Write"
+
+func addPreToolUseGuardHook(hooks map[string]any, binaryPath string) {
+	hookCmd := binaryPath + " hook-guard"
+	existing, ok := hooks["PreToolUse"].([]any)
+	if !ok {
+		existing = []any{}
+	}
+
+	// Check if already present — upgrade matcher in-place if outdated
+	for _, entry := range existing {
+		if m, ok := entry.(map[string]any); ok {
+			for _, h := range toHookSlice(m["hooks"]) {
+				if cmd, ok := h["command"].(string); ok && strings.Contains(cmd, "hook-guard") {
+					if m["matcher"] != hookGuardMatcher {
+						m["matcher"] = hookGuardMatcher
+					}
+					return
+				}
+			}
+		}
+	}
+
+	// Add as second PreToolUse entry (runs after hook-check)
+	existing = append(existing, map[string]any{
+		"matcher": hookGuardMatcher,
 		"hooks": []any{
 			map[string]any{
 				"type":    "command",

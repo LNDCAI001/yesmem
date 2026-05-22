@@ -119,5 +119,14 @@ func runMigrateCmd() {
 		fmt.Printf("  Plugin: %d files updated\n", n)
 	}
 
+	// 6. Hook-guard state: clean up legacy JSON cooldown (now DB-backed)
+	if removed, err := setup.MigrateGuardState(home); err != nil {
+		fmt.Fprintf(os.Stderr, "  Guard state warning: %v\n", err)
+	} else if removed != "" {
+		fmt.Printf("  Guard state: removed legacy %s\n", removed)
+	} else {
+		fmt.Println("  Guard state: OK")
+	}
+
 	fmt.Printf("Migration complete (version: %s)\n", buildinfo.Version)
 }

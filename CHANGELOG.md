@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Pre-DeepSeek pattern match for destructive bash
+- SQLite cooldown + downgrade BLOCK for non-authorized tools
+- Per-skill cooldown for guard suggestions (10min TTL)
+- Self-heal hook-guard matcher on yesmem update
+- Extend hook-guard to REPL tool calls
+- Add Anthropic API fallback for hook-guard
+- Add hook-guard with DeepSeek evaluation, config, and auto-register
+
+### Fixed
+
+- Emit guard SUGGEST/BLOCK in Claude Code hookSpecificOutput schema
+- Fix defer-in-loop leak, silent errors, code fence parsing
+- Move BLOCKED_PATTERNS and scan_text before first use
+- Remove premature scan_text call before function definition
+- Add check_open_pr merged-branch detection
+
+### Reverted
+
+- Revert "fix(sync): remove premature scan_text call before function definition"
+
+### Testing
+
+- Add guard tests for config resolution and API evaluation
+
+## [2.1.1] - 2026-05-22
+
+### Added
+
 - Add opencode as third provider option in setup wizard
 - Shared SYSTEM.md template for OpenCode + Claude Code pipelines
 - Add SYSTEM.md with memory depth layers to repo
@@ -2573,7 +2601,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive tests for generator and storage
 
 
-[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/carsteneu/yesmem/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/carsteneu/yesmem/compare/v2.0.6...v2.1.0
 [2.0.6]: https://github.com/carsteneu/yesmem/compare/v2.0.5...v2.0.6
 [2.0.5]: https://github.com/carsteneu/yesmem/compare/v2.0.4...v2.0.5

@@ -39,6 +39,13 @@ type FileInput struct {
 	FilePath string `json:"file_path"`
 }
 
+// REPLInput represents the tool_input for REPL tool calls (Claude Code internal).
+// REPL executes JavaScript that can invoke sh(), put(), Edit(), Write(), etc.,
+// so the full code body is the relevant surface for rule evaluation.
+type REPLInput struct {
+	Code string `json:"code"`
+}
+
 // WebFetchInput represents the tool_input for WebFetch tool calls.
 type WebFetchInput struct {
 	URL    string `json:"url"`

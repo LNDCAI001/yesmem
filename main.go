@@ -79,6 +79,8 @@ func main() {
 		runGapReview()
 	case "hook-check":
 		hooks.RunCheck(yesmemDataDir())
+	case "hook-guard":
+		hooks.RunGuard(yesmemDataDir())
 	case "hook-learn":
 		hooks.RunLearn(yesmemDataDir())
 	case "hook-assist":
@@ -278,6 +280,7 @@ func printUsage() {
 	fmt.Println("  stop [target]   Stop daemon/proxy/all (default: all)")
 	fmt.Println("  restart         Stop all, clean up, start daemon fresh")
 	fmt.Println("  hook-check      PreToolUse hook: warn about known gotchas")
+	fmt.Println("  hook-guard      PreToolUse hook: evaluate tool calls against RULES.md via LLM")
 	fmt.Println("  hook-failure    PostToolUseFailure hook: learn gotcha + deep search (combined)")
 	fmt.Println("  hook-learn      PostToolUseFailure hook: auto-learn gotchas (legacy, use hook-failure)")
 	fmt.Println("  hook-assist     Deep search on Bash failures (legacy, use hook-failure)")

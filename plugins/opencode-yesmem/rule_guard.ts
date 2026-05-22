@@ -80,32 +80,14 @@ const FIRST_PARTY_DEFAULTS: Record<string, string> = {
     let apiKey = "";
     let npm = "";
 
-    let fallbackUrl = "";
-    let fallbackNpm = "";
     for (const [providerId, provider] of Object.entries(models)) {
       const p = provider as any;
       if (p.models && p.models[model]) {
-        const url = p.api || FIRST_PARTY_DEFAULTS[providerId] || "";
-        const key = auth[providerId]?.key || "";
-        const npmPkg = p.npm || "";
-        // Prefer provider with a valid API key
-        if (key) {
-          apiUrl = url;
-          apiKey = key;
-          npm = npmPkg;
-          break;
-        }
-        // Save first match as fallback
-        if (!fallbackUrl) {
-          fallbackUrl = url;
-          fallbackNpm = npmPkg;
-        }
+        apiUrl = p.api || FIRST_PARTY_DEFAULTS[providerId] || "";
+        apiKey = auth[providerId]?.key || "";
+        npm = p.npm || "";
+        break;
       }
-    }
-    // Fallback: use first matching provider even without key (NO-KEY will trigger PASS)
-    if (!apiKey && fallbackUrl) {
-      apiUrl = fallbackUrl;
-      npm = fallbackNpm;
     }
 
     return { model, apiUrl, apiKey, npm };

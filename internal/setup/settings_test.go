@@ -7,6 +7,33 @@ import (
 	"testing"
 )
 
+func TestAddPreToolUseGuardHook_UpgradesOutdatedMatcher(t *testing.T) {
+	hooks := map[string]any{
+		"PreToolUse": []any{
+			map[string]any{
+				"matcher": "Bash|Edit|Write",
+				"hooks": []any{
+					map[string]any{
+						"type":    "command",
+						"command": "/usr/local/bin/yesmem hook-guard",
+					},
+				},
+			},
+		},
+	}
+
+	addPreToolUseGuardHook(hooks, "/usr/local/bin/yesmem")
+
+	entries, ok := hooks["PreToolUse"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("expected single PreToolUse entry, got %v", hooks["PreToolUse"])
+	}
+	entry := entries[0].(map[string]any)
+	if entry["matcher"] != hookGuardMatcher {
+		t.Errorf("expected matcher %q, got %q", hookGuardMatcher, entry["matcher"])
+	}
+}
+
 func TestRegisterMCPPermissions_Empty(t *testing.T) {
 	settings := map[string]any{}
 	registerMCPPermissions(settings)

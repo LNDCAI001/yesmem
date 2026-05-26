@@ -94,7 +94,7 @@ yesmem setup    # Configure MCP server, hooks, proxy, services
 - **Smart extraction,** content-aware truncation before extraction starts. Then: extraction → embedding → quality refinement → clustering.
 - **One binary, one command:** no Python, no Node, no Docker, no cloud account. `yesmem setup`, done.
 - **Your data stays yours,** everything in `~/.claude/yesmem/`. Nothing leaves your machine.
-- **Free:** Apache 2.0. Use it for anything — personal, commercial, agency work. No restrictions.
+- **Free:** FSL-1.1-ALv2. Use it for anything except building a competing product. After 2 years, Apache 2.0.
 
 
 ## Architecture
@@ -257,17 +257,12 @@ YesMem works with both **API keys** (pay-per-token) and **subscription plans** (
 
 ## License
 
-[Apache 2.0](LICENSE) — do whatever you want with it. Personal, commercial, agency work — no restrictions.
+[FSL-1.1-ALv2](LICENSE) — Functional Source License. Use it for anything except building a competing product. After 2 years per version, it becomes Apache 2.0.
 
-## Built by
+## Who builds this
+
+YesMem is built and funded by [CCM19](https://ccm19.de), a German consent management platform. We didn't set out to build a memory product — we set out to stop bleeding engineering hours to Claude Code session resets while shipping production infrastructure.
+
+YesMem started as our internal fix. It's open source because we'd rather rely on a community-vetted tool than maintain a private fork forever. CCM19 funds full-time development and operates the project's infrastructure; the team that builds YesMem is the team that uses it daily.
 
 Papoo Software & Media GmbH, Bonn, Germany. In production since March 2026. Private development since November 2025, public since April 2026.
-
-## Sponsor
-
-<details>
-<summary>Sponsored by CCM19</summary>
-
-[ccm19.de](https://www.ccm19.de/en/) — the Cookie Consent Manager from Germany.
-
-</details>

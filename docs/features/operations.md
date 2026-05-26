@@ -150,7 +150,7 @@ update:
 
 ---
 
-## 5. Capabilities System (Cap-Spec v1.1, since 2026-04-24)
+## 5. Capabilities System (Cap-Spec v1.1)
 
 YesMem capabilities are reusable, tested tool definitions persisted in `caps.db` and rendered as Markdown bundles (`CAP.md`). The cap system answers a recurring need: "I built this useful tool inside one Claude session and want to call it from any future session, from a scheduled job, or from the proxy mid-fork."
 
@@ -221,7 +221,7 @@ Cap-Spec v1.1 lives in the sibling project `~/projects/cap-spec`. The `yesmem-ca
 
 ---
 
-## 6. Secret Sanitization (since 2026-04-29)
+## 6. Secret Sanitization
 
 `SecretRedactor` (`internal/sanitize`) is a single-pass regex-based redactor that replaces matches with `[redacted:<kind>]` markers. It runs at every persistence boundary so a leaked credential never reaches durable storage — neither in summaries, scheduled-job logs, briefings, nor extraction results.
 
@@ -248,15 +248,15 @@ Cap-Spec v1.1 lives in the sibling project `~/projects/cap-spec`. The `yesmem-ca
 
 - **Sanitize-before** — outbound prompts pass through the redactor before hitting the upstream API.
 - **Sanitize-after** — inbound responses pass through again so model-echo of unredacted prompts cannot recontaminate logs.
-- **Inner-error path** — even when the wrapped client fails, the partial response is sanitized before the error bubbles up (`1bdbcfd`).
+- **Inner-error path** — even when the wrapped client fails, the partial response is sanitized before the error bubbles up.
 
-The decorator wraps **all six** LLM call sites in the daemon: extraction, briefing, summarize, quickstart, quality, and the headless+briefing fallback. Wiring is done at assignment time (`7e7a528`) rather than post-replacement to avoid a window where an unwrapped client could be reused.
+The decorator wraps **all six** LLM call sites in the daemon: extraction, briefing, summarize, quickstart, quality, and the headless+briefing fallback. Wiring is done at assignment time rather than post-replacement to avoid a window where an unwrapped client could be reused.
 
 The scheduler also redacts `Command`, `ErrorMsg`, headless stdout, and stderr (`cf66345`) before persisting to `bash_job_runs`.
 
 ### Allowed Exceptions
 
-`AllowedExceptions` in `config.yaml` lists strings that bypass redaction. Match is **full-match** (anchored both ends), not substring, so `MY_PUBLIC_TOKEN` does not unmask `MY_PUBLIC_TOKEN_FOR_TEST` (`1bea554`). The decorator-order contract (sanitize wraps client, never the other way around) is documented in `internal/extraction/SANITIZING_CLIENT.md` (`07cfca6`).
+`AllowedExceptions` in `config.yaml` lists strings that bypass redaction. Match is **full-match** (anchored both ends), not substring, so `MY_PUBLIC_TOKEN` does not unmask `MY_PUBLIC_TOKEN_FOR_TEST`. The decorator-order contract (sanitize wraps client, never the other way around) is documented in `internal/extraction/SANITIZING_CLIENT.md`.
 
 ### Configuration
 
@@ -272,7 +272,7 @@ When `enabled: false` (default in dev), the wrapper is a no-op pass-through; pro
 
 ---
 
-## 7. Sandbox Execution (since 2026-04-26)
+## 7. Sandbox Execution
 
 Bash-mode scheduled jobs and headless agent invocations that opt in run inside `ai-jail`, a network-restricted, filesystem-restricted Linux sandbox. The daemon resolves the sandbox profile per fire and wraps the command via `BuildSandboxedCommand` (bash) / `WrapExecArgs` (headless) before invoking `exec.Cmd`.
 
@@ -290,11 +290,11 @@ Profiles are persisted in `scheduled_jobs.sandbox` (job-level) and optionally ov
 
 The daemon:
 
-1. Resolves the `ai-jail` binary path on startup (downloaded from a pinned GitHub release, extracted from the tarball; correct asset naming and tarball extraction was fixed in `faa708e`).
-2. Wraps `exec.Cmd` via `BuildSandboxedCommand` for bash-mode jobs and `WrapExecArgs` for `executeHeadless` (`8803863`).
-3. Fails closed when the sandbox is unavailable (`27ec031`) — auto-correct will not silently re-fire an unsandboxed command on systems where the binary is missing.
+1. Resolves the `ai-jail` binary path on startup (downloaded from a pinned GitHub release, extracted from the tarball).
+2. Wraps `exec.Cmd` via `BuildSandboxedCommand` for bash-mode jobs and `WrapExecArgs` for `executeHeadless`.
+3. Fails closed when the sandbox is unavailable — auto-correct will not silently re-fire an unsandboxed command on systems where the binary is missing.
 
-`.ai-jail` sandbox configs are git-ignored (`8346204`) so per-machine tweaks do not leak into commits.
+`.ai-jail` sandbox configs are git-ignored so per-machine tweaks do not leak into commits.
 
 ### Caveats
 
@@ -389,7 +389,7 @@ Uses `claude -p` (Claude Code non-interactive mode) as a daemon subprocess:
 
 Caps are ideal for scheduled tasks because they are predictable: defined schema, known handler, deterministic behavior. The agent activates the cap and executes it — no improvisation needed.
 
-### Bash Mode + Auto-Correct (since 2026-04-24)
+### Bash Mode + Auto-Correct
 
 Bash-mode jobs execute a single named script from a capability's `CAP.md` (`runtime: bash`). The scheduler resolves the script via `findBashScript(meta, job.ScriptName)` — explicit `script_name` is mandatory whenever a cap declares multiple bash scripts, otherwise the first declared script wins silently and the job appears to "succeed" while running the wrong code.
 
@@ -407,7 +407,7 @@ Each bash run is persisted in `bash_job_runs` (CRUD via `internal/storage/bash_r
 
 **Caveat — in-memory `job.Sandbox`:** the scheduler reads `job.Sandbox` from its in-memory pointer (`s.jobs[id]`), so a direct `UPDATE scheduled_jobs SET sandbox=...` does not take effect until daemon restart or until the job is re-created through `mcp__yesmem__schedule(action="delete"|"create")`.
 
-### Cap Consolidation Pattern (since 2026-05-04)
+### Cap Consolidation Pattern
 
 When a capability needs both poll-based ingestion *and* reactive replies, run them in **one** scheduled bash script with an internal deadline-loop instead of two separate schedules:
 

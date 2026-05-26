@@ -22,7 +22,7 @@ At every session start, a briefing is generated and injected as system context.
 
 ### Briefing Injection via Proxy
 
-The briefing is now injected as a proxy conversation turn rather than via the SessionStart hook. The proxy calls `GenerateFullBriefing()` (which consolidates the former `generateRawBriefing` + `refineBriefing` into a single function) and injects the result as an early assistant message in the conversation. This ensures the briefing appears consistently and benefits from prompt caching.
+The briefing is injected as a proxy conversation turn. The proxy calls `GenerateFullBriefing()` (a single consolidated function) and injects the result as an early assistant message in the conversation. This placement benefits from prompt caching and ensures the briefing appears consistently.
 
 ### Properties
 - **Token budget:** 5000 tokens max (configurable)
@@ -116,7 +116,7 @@ Claude drifts from CLAUDE.md instructions in long sessions because they sit at t
 ### Pipeline
 1. **Mechanical Pre-Filter:** Removes code blocks, tables, directory trees, and entire reference sections (heading-aware: headings containing "Schema", "Reference", "CLI", "API", "endpoint" etc. skip the whole section). Deterministic, zero LLM cost.
 2. **Input Cap:** Filtered text capped at 50k chars (~12k tokens) to prevent runaway LLM costs on large CLAUDE.mds with many linked files.
-3. **LLM Condensation:** Quality model (Sonnet via `QualityClient`, configurable) extracts rules, conventions, principles, gotchas, and process requirements. Haiku was too weak — hallucinated generic rules instead of extracting real ones. Prompt instructs "err on side of including too much" + aggressive condensation into terse imperative form.
+3. **LLM Condensation:** Quality model (Sonnet via `QualityClient`, configurable) extracts rules, conventions, principles, gotchas, and process requirements. Sonnet is used because it reliably extracts real rules rather than hallucinating generic ones. Prompt instructs "err on side of including too much" + aggressive condensation into terse imperative form.
 4. **Storage:** Condensed block stored in `doc_sources` with `is_rules=1`, content-hash (SHA256) in `version` field prevents redundant re-condensation.
 5. **Injection:** Proxy tracks cumulative token count per thread. Every ~40k tokens, fetches condensed block from daemon and formats as `[Rules Reminder]...[/Rules Reminder]`.
 6. **Post-Collapse Re-Injection:** After a stub collapse, rules are immediately re-injected via `rulesInjectAfterCollapse()` — counter resets, no 40k wait.
@@ -128,7 +128,6 @@ Claude drifts from CLAUDE.md instructions in long sessions because they sit at t
 - **No strip logic** — old blocks accumulate until next collapse (Spaced Repetition, cache-friendly)
 - **Token budget:** ~3-7k chars condensed (proportional to CLAUDE.md size) × max 4-5 blocks = ~5-15k tokens (design target, not code-enforced)
 - **QualityClient** (Sonnet by default) — initialized at daemon startup, wired to Handler for on-demand condensation
-- Replaces deprecated `yesmem-ops.md` generator (Section 12 old)
 
 ### 12a. RULES.md — Project-Level Agent Policy
 
@@ -251,13 +250,13 @@ Automatic detection and activation of plan files read during a session:
 
 ---
 
-## 7. System Prompt Rewrite (Proxy-Level) [deprecated]
+## 7. System Prompt Rewrite (Proxy-Level)
 
 The proxy intercepts and rewrites Claude Code's system prompt before it reaches the model. Based on analysis of Claude Code's `prompts.ts` source, Anthropic gates better directives behind an internal `USER_TYPE=ant` flag. This feature replicates those improvements.
 
-> **Note:** Current mechanism uses profile-aware prompt fields: `SharedPrompt`, `ClaudePrompt`, `CodexPrompt`, `OpencodePrompt` (`config.go:138-141`). The three flags below are deprecated.
+Configuration uses profile-aware prompt fields: `SharedPrompt`, `ClaudePrompt`, `CodexPrompt`, `OpencodePrompt` (`config.go:138-141`).
 
-### Three Config Flags (`config.yaml` → `proxy:`) [deprecated]
+### Three Config Flags (`config.yaml` → `proxy:`)
 
 | Flag | Default | Effect |
 |------|---------|--------|

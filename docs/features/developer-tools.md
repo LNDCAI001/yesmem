@@ -54,11 +54,10 @@ YesMem hooks into Claude Code at multiple event points.
 | Hook | Claude Code Event | Purpose |
 |------|-------------------|---------|
 | `briefing-hook` | SessionStart | Generate and inject briefing |
-| `micro-reminder` | UserPromptSubmit | [deprecated, migrated to idle-tick] |
 | `hook-check` | PreToolUse | Knowledge-aware gotcha injection + hard block on repeat offenders |
 | `hook-failure` | PostToolUseFailure | Learn gotcha from failure + deep search for solutions (combined) |
 | `hook-resolve` | PostToolUse | Auto-resolve open tasks when commit messages match |
-| `hook-think` | PostToolUse | [removed — reminder injection now handled by proxy (settings.go:258)] |
+| `hook-think` | PostToolUse | [reminder injection handled by proxy (settings.go:258)] |
 | `session-end` | Stop | Session cleanup, trigger extraction |
 | `idle-tick` | UserPromptSubmit | Dynamic yesmem-usage reminder when idle |
 
@@ -100,7 +99,7 @@ Measures whether warnings actually prevented errors:
 
 #### Gotcha Injection Decay (Precision-Based)
 
-Gotcha injection now uses precision-based decay rather than simple age-based decay. Each gotcha candidate is scored by its precision — relevance to the current tool context. At low precision, only the top-1 gotcha is shown (tiered output). This prevents flooding the context with marginally relevant gotchas while ensuring the most relevant one always appears.
+Gotcha injection uses precision-based decay. Each gotcha candidate is scored by its precision — relevance to the current tool context. At low precision, only the top-1 gotcha is shown (tiered output). This prevents flooding the context with marginally relevant gotchas while ensuring the most relevant one always appears.
 
 #### Feedback loop with `hook-failure`
 
@@ -117,10 +116,6 @@ After `/clear` or `/compact`, Claude Code sends a new session ID. YesMem provide
 - **briefing-hook** looks up the tracked session and generates a recovery briefing
 - Recovery block is injected **post-refine** so it survives the briefing refinement pass
 - Deterministic: no guessing, uses the exact session that just ended
-
-### Legacy Hooks (deprecated)
-- `hook-learn` — replaced by `hook-failure`
-- `hook-assist` — replaced by `hook-failure`
 
 ### REPL Pattern Detection
 
@@ -149,7 +144,7 @@ The plugin registers five hooks into opencode's event system:
 
 | Hook | opencode Event | Purpose |
 |------|---------------|---------|
-| **code_nav** | `tool.execute.before` | Blocks `grep`, `cat`, `find`, `sed`, `rg` etc. when the target file is indexed in the CBM code graph. Suggests MCP code tools instead. 2-strike auto-allow system with 1h TTL. First attempt blocked with yesmem tool suggestion, second attempt auto-allowed. The dismiss_code_nav function referenced in docs does not exist in current code (code_nav.ts:14). |
+| **code_nav** | `tool.execute.before` | Blocks `grep`, `cat`, `find`, `sed`, `rg` etc. when the target file is indexed in the CBM code graph. Suggests MCP code tools instead. 2-strike auto-allow system with 1h TTL. First attempt blocked with yesmem tool suggestion, second attempt auto-allowed. |
 | **rule_guard** | `tool.execute.before` + `tool.execute.after` | Evaluates every tool call against `RULES.md` + Skill-Catalog via DeepSeek. BLOCK throws to prevent the tool call; SUGGEST injects a directive via `tool.execute.after`; PASS lets it through. (See §10c below for full detail.) |
 | **failure_learn** | `tool.execute.after` | Detects failed Bash commands and forwards them to the daemon for gotcha extraction — the same auto-learning loop as `hook-failure` in the Claude Code hooks. |
 | **auto_resolve** | `tool.execute.after` | Watches for git commit messages and auto-resolves matching open tasks via `resolve_by_text()`. |
@@ -188,7 +183,7 @@ The `rule_guard` hook is the plugin's largest and most iterated component (~30 c
 
 1. **Rule loading** — At startup, `loadRules()` reads `RULES.md` from the project root. It extracts numbered rules plus the `## Skill Catalog` section (containing skill activation triggers in YAML format). This combined text is the evaluation context.
 
-2. **DeepSeek evaluation** — On every `tool.execute.before` event, the guard sends the tool name + input + rules context to DeepSeek (`deepseek-v4-flash` model, non-streaming). Model is now read from config.yaml extraction.model (since 2026-05-21). The LLM returns a structured decision: `BLOCK`, `SUGGEST`, or `PASS` with an explanation.
+2. **DeepSeek evaluation** — On every `tool.execute.before` event, the guard sends the tool name + input + rules context to DeepSeek (`deepseek-v4-flash` model, non-streaming). Model is read from config.yaml extraction.model. The LLM returns a structured decision: `BLOCK`, `SUGGEST`, or `PASS` with an explanation.
 
 3. **BLOCK** — The tool call is prevented via `throw new Error(...)`. Used for rule violations that would cause data loss, commit pollution, or security issues. The error message includes the violated rule number and a directive (e.g. "Fix the source learning instead of editing yesmem-ops.md").
 
@@ -297,7 +292,7 @@ The `code_nav` hook in the `opencode-yesmem` plugin (§10b) fires on `tool.execu
 
 **Dismissal:**
 
-The suggestion uses a 2-strike auto-allow system with 1h TTL. First attempt is blocked with a yesmem tool suggestion; second attempt is auto-allowed. The dismiss_code_nav function referenced in some documentation does not exist in current code (code_nav.ts:14).
+The suggestion uses a 2-strike auto-allow system with 1h TTL. First attempt is blocked with a yesmem tool suggestion; second attempt is auto-allowed.
 
 **Legacy support (Claude Code):**
 
@@ -372,7 +367,7 @@ The wiki is also available as a bundled capability (`wiki_export` cap) for sched
 
 ---
 
-## RULES.md — Policy Engine (since 2026-05-13)
+## RULES.md — Policy Engine
 
 A declarative rule file with 30+ rules and a skill catalog. Rules are evaluated against every tool call before execution.
 

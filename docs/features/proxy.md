@@ -12,7 +12,7 @@ Claude Code → ANTHROPIC_BASE_URL=http://localhost:9099 → yesmem proxy → ap
 
 Thread identification uses the `X-Claude-Code-Session-Id` header sent by Claude Code. Each unique session ID gets isolated proxy state (stubs, collapse cutoff, sawtooth cache, keepalive timers).
 
-Proxy state is additionally segregated per **client type** (`claude` vs `codex`, since 4f8aaa0): the stub-cycle pipeline, REPL-pattern fork-detection, and system-prompt rewrites run on separate code paths so a Codex session cannot leak Claude-specific injections (or vice versa). REPL-pattern detection itself is fork-driven (8301690) — pattern matches are surfaced as cap-suggestion injections via the Sawtooth-tail (4c353f1) rather than scanning every assistant message inline.
+Proxy state is additionally segregated per **client type** (`claude` vs `codex`): the stub-cycle pipeline, REPL-pattern fork-detection, and system-prompt rewrites run on separate code paths so a Codex session cannot leak Claude-specific injections (or vice versa). REPL-pattern detection is fork-driven — pattern matches are surfaced as cap-suggestion injections via the Sawtooth-tail rather than scanning every assistant message inline.
 
 ### Stub Cycle Pipeline
 
@@ -135,7 +135,7 @@ The proxy auto-detects whether the account uses 5-minute ephemeral or 1-hour pro
 ### Per-Thread Keepalive
 
 Each proxy thread (session) maintains its own keepalive timer:
-- **Isolation:** Active sessions no longer starve quiet ones — each thread pings independently
+- **Isolation:** Each thread pings independently
 - **Dynamic interval:** Based on detected TTL (5min ephemeral → 4min pings, 1h → 54min pings)
 - **Sawtooth integration:** Keepalive pings reset the sawtooth pause timer, preventing unnecessary stub cycles after idle periods
 - **Suppressed during detection:** No pings fire during the initial TTL detection phase to avoid corrupting the measurement
@@ -270,12 +270,12 @@ Model tier names (`haiku`, `sonnet`, `opus`) are mapped automatically per provid
 
 Note: OAuth token is "exclusively for Claude Code and Claude.ai" — direct API call from daemon with OAuth violates TOS. Solution: API key or `llm.provider: cli`.
 
-### Recent Setup Improvements
+### Setup Features
 
 - **Non-interactive install**: `yesmem setup` (without `-i`) runs a streamlined default path that auto-detects authentication type (CLI vs API key)
-- **API key detection**: The setup wizard now checks `.claude.json` for `primaryApiKey` as a fallback when `$ANTHROPIC_API_KEY` is not set
+- **API key detection**: The setup wizard checks `.claude.json` for `primaryApiKey` as a fallback when `$ANTHROPIC_API_KEY` is not set
 - **CBM binary auto-download**: During setup, the CBM CLI binary (code scanner) is automatically downloaded from GitHub releases if not present
-- **Config migration**: `yesmem migrate` now applies config template updates and adds new proxy fields (like `effort_floor`, `skill_eval_inject`) to existing configs. Also deploys bundled skills and caps (previously required manual `yesmem install` after updates).
+- **Config migration**: `yesmem migrate` applies config template updates and adds new proxy fields (like `effort_floor`, `skill_eval_inject`) to existing configs. Also deploys bundled skills and caps automatically.
 
 ### Setup Auth Conflict Resolution
 
@@ -333,7 +333,7 @@ The proxy resolves the effective prompt flags for each request by merging three 
 1. **Hard defaults** — agent-neutral flags enabled by default in `Default()`
 2. **`shared_prompt`** — base layer for all profiles
 3. **Profile-specific** — `claude_prompt`, `codex_prompt`, or `opencode_prompt` in config.yaml
-4. **Legacy flat fields** (backward compatibility) — deprecated `proxy.prompt_code_tools_first` etc. mapped via `claudeLegacyFlags()`
+4. **Flat config fields** — `proxy.prompt_code_tools_first` etc., mapped via `claudeLegacyFlags()` for backward compatibility
 
 **Profile-aware injector gating** (`internal/proxy/`):
 
@@ -396,7 +396,7 @@ API requests use Anthropic's prompt caching (`cache_control: ephemeral` on syste
 
 ---
 
-## 3. Provider Auto-Discovery (since 2026-05-21)
+## 3. Provider Auto-Discovery
 
 The proxy reads three config sources from the opencode installation at startup and auto-configures routing:
 

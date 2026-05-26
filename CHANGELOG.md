@@ -9,10 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Exclude RULES.md from public repo sync
 - Regenerate CHANGELOG.md (26 release sections)
 
 ### Documentation
 
+- Tighten title, fix dialog spacing and comma splice
+- Move AI-agent reading-path block before The Experience, smooth em-dash gaps
+- Final README polish — fix grammar, remove filler, close sections
+- Replace em-dashes with standard punctuation (colons, periods, commas)
+- Restructure README — continuity-first narrative (Codex draft)
+- Remove 'Implementation Status/Done' checklist from CapFeatures.md
+- Remove deprecated items + open issues from feature docs — verified against code
+- Remove temporal annotations — present tense, no dates, no commit hashes
+- Fix i18n language default claims (German → English)
 - Reddit launch draft — add 'Try it: point your AI agent at the repo' CTA
 - AI agent orientation rewritten — direct address, numbered path, competitor anchors
 - 'Who builds this' — CCM19 funding story ersetzt Built by/Sponsor

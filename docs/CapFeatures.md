@@ -29,9 +29,6 @@ Claude Code loses **learned tool knowledge** between sessions: REPL snippets, AP
 │     1. Loads cap from DB (learnings with category="cap")           │
 │     2. Returns generated registerTool() code                       │
 │     3. Records cap in session_active_caps                          │
-│   ⚠ Naming discrepancy: bootstrapper references                   │
-│     mcp__yesmem__activate_cap, MCP registers              │
-│     activate_cap. Works only if alias exists.                      │
 │                                                                     │
 │ LAYER C — Proxy Schema Injection (from turn N+1)                   │
 │   Proxy reads active caps for the session via capsCache,           │
@@ -302,7 +299,7 @@ Request to Anthropic API
 **Catalog injection** (`renderCapabilitiesCatalog` in `caps_inject.go`):
 - Generates `<capabilities-available>` block as system-reminder
 - Contains bootstrapper: `registerTool("activate_cap", ...)` as REPL tool
-- Bootstrapper calls `mcp__yesmem__activate_cap` internally (⚠ see naming discrepancy)
+- Bootstrapper calls `mcp__yesmem__activate_cap` internally
 - Lists all available caps with name + description as a table
 - Rendered once per session
 
@@ -320,11 +317,9 @@ Request to Anthropic API
 
 ## 7. Blob Pipe (>30KB Payloads)
 
-For capabilities that need HTTP fetches larger than 30KB (e.g. Reddit posts with many comments).
+For capabilities that need HTTP fetches larger than 30KB (e.g. Reddit posts with many comments). The REPL VM truncates output at ~30KB, so large payloads use CLI subcommands that pipe data directly into the daemon DB:
 
-**Problem:** REPL output is truncated at ~30KB. Temp files require Read tool permission.
-
-**Solution:** CLI subcommands `cap-blob-put` / `cap-blob-get`:
+**Capability:** `cap-blob-put` / `cap-blob-get`:
 
 ```
 Producer → curl | yesmem cap-blob-put --cap NAME --key KEY
@@ -426,7 +421,7 @@ Schema: `repl_patterns` table (hash, normalized, raw, project, count, first_seen
 | `get_repl_patterns` | Returns frequently occurring patterns. |
 | `dismiss_repl_pattern` | User rejects a suggestion. |
 
-### Noise Reduction (live since 2026-04-20)
+### Noise Reduction
 
 | Measure | File | Effect |
 |---------|------|--------|
@@ -555,60 +550,7 @@ Capabilities registered in the system (as of 2026-04-21):
 
 ---
 
-## 12. Implementation Status
-
-### Done
-
-- [x] `cap` as valid learning category (v0.55 migration from `capability`)
-- [x] `CapMeta` struct with `ParseCapMeta`/`ToJSON`/`HasTag` (`cap_meta.go`)
-- [x] Daemon handlers: `handleGetCaps`, `handleSaveCap`, `handleRegisterCaps`, `handleActivateCap`, `handleDeactivateCap`, `handleGetActiveCaps`
-- [x] Cap Store: separate `capabilities.db`, CRUD, sandboxing, quotas, paging
-- [x] MCP tool registration: `get_caps`, `save_cap`, `register_caps`, `activate_cap`, `deactivate_cap`, `cap_store`, `get_active_caps`
-- [x] `session_active_caps` table + storage methods (`ActivateCap`, `DeactivateCap`, `GetSessionCaps`, `TouchCap`)
-- [x] Cap Store storage: `CapsCreateTable`, `CapsUpsert`, `CapsQuery`, `CapsQueryPaged`, `CapsDelete`, `CapsListTables`, `OpenCapsDB`, `CloseCapsDB`, `CapsReady`, `ValidateCapName`
-- [x] Proxy: `injectCapabilitiesTurn()` + `injectCapabilitiesTurnImpl()` — schema injection for active caps
-- [x] Proxy: `CapsCache` — in-memory cache with `Get`/`Set`/`Invalidate` + `cachedQueryFn`
-- [x] Proxy: `renderCapabilitiesCatalog()` — catalog in system-reminder with bootstrapper
-- [x] Proxy: `invalidateThreadCaches()` — coordinated cache invalidation
-- [x] Briefing: `renderCaps()` — caps in session briefing
-- [x] Existing capabilities: reddit_fetch, reddit_search, cap_search, cap_collect, cap_save_analysis, reddit_research, cap_delete, proxy_health
-- [x] REPL Pattern Detection: `NormalizeCommand`, `isTrivialShape`, `detectReplPattern`, `formatPatternSuggestion`
-- [x] Storage: `RecordReplPattern`, `GetReplPatterns`, `DismissReplPattern`, `IsPatternDismissed`
-- [x] Daemon handlers: `handleRecordReplPattern`, `handleGetReplPatterns`, `handleDismissReplPattern`
-- [x] MCP tools: `record_repl_pattern`, `get_repl_patterns`, `dismiss_repl_pattern`
-- [x] Fixation Detector: `DetectFixation` with 3 signals (consecutive errors, edit-build cycles, file retries)
-- [x] Trivial shape filter for REPL Pattern Detection (last commit `4708c8d`)
-- [x] REPL Pattern Noise Reduction: deny-list +15, budget max 3/thread, threshold 5→8
-- [x] REPL Pattern Suggestion envelope format: `{"pattern": {...}, "workflow": {...}}`
-- [x] Multi-Turn Workflow Sequence Detection: `thread_sequences` table, turn hash computation, subsequence matching (commit `81eb6b6`)
-- [x] `auto_active` default changed to `true` (`handler_caps.go`)
-- [x] Blob pipe (`internal/capblob/`): CLI `cap-blob-put`, cap_store-based chunk store, used by `reddit_fetch`
-- [x] CAP.md: Notes section removed from parser, writer, struct
-- [x] CAP.md: `DetectRequires()` — scans script for `store(`/`web(`/`file(` and populates `Requires []string`
-- [x] Adapter registry: `DefaultAdapters()`, `ProviderToGeneric()`, `GenericToProvider()`, `GenerateAdapterJS()` (`adapter.go`)
-- [x] Writer applies `ProviderToGeneric` before render — CAP.md files store generic names
-- [x] Daemon: `save_cap` normalizes handler_repl via `ProviderToGeneric`, `activate_cap`/`register_caps` expand via `GenericToProvider`
-- [x] Existing CAP.md files migrated to generic names
-- [x] WriteCapToDisk bug fixed: meta object passed directly instead of re-parsing content string (commit `6ed3fe5`)
-- [x] ExportAllCaps + SyncCapsFromDisk on daemon start (`daemon.go:193-194`)
-- [x] yesmem-build-tool skill: dependency-caps docs, haiku() note, composite example, API rename, bundled template synced
-
-### Open
-
-- [ ] **Split-Brain Session ID** (#53443) — proxy thread_id vs. daemon session_id diverge via pidMap. Blocks correct end-to-end flow for subagents. **Most critical open issue.**
-- [ ] **Subagent Injection** (#53524) — subagents receive no `<capabilities-active>` blocks despite `auto_active=true` in CapMeta. Likely tied to session ID mapping.
-- [ ] **Phase 2 Idempotency** — activate_cap over-matching: detection of "already injected" is too broad.
-- [ ] **Eviction/TTL** — caps remain active until session end. Add in v2 if friction becomes visible.
-- [ ] **SSE Weights LFS** (#53273) — embedding tests failing due to ASCII instead of binary (pre-existing, not capabilities-specific).
-- [x] **cap_store→store rename migration** — all caps already use generic `store()`. `GenericToProvider` correctly converts to `mcp__yesmem__cap_store()` on activation. Verified 2026-04-22.
-- [x] **Self-improving cap cycle** — via proxy instruction in `caps_inject.go:71`: "When a capability handler errors: diagnose the root cause, fix the handler, save the corrected version via save_cap (auto-supersedes), then retry." No daemon process required.
-- [x] **cap export/import CLI** — export runs at daemon start via `ExportAllCaps`. Import implicit: caps in `~/.claude/caps/` directory are loaded at start via `SyncCapsFromDisk`. No CLI subcommand needed.
-- [ ] **Workflow Suggestion Injection** — workflow suggestions are returned in the envelope, but the proxy does not yet format and inject them as system-reminder. Only data collection is active.
-- [ ] **Worktree → main merge** — the entire feat+capability-memory branch is not merged to main. All features run only via the deployed binary from the worktree.
-
----
-
-## 13. Design Decisions
+## 12. Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
@@ -753,7 +695,7 @@ There are **3 adapter primitives**, each action-based:
 
 - **Quote YAML descriptions**: Descriptions containing `:`, backticks, or special characters must be in `%q` quotes, otherwise YAML parse error.
 - **Schema not in frontmatter**: Derived from the JS function signature. Explicit schema only when signature derivation is insufficient.
-- **SQL validation has its own allowlist**: `storage.blockedSQLPattern` blocks EVERYTHING including CREATE — the Database section has its own validation (`dangerousSQLPattern` + `safeSQLPattern` in `capfile/parse.go`).
+- **Two-tier SQL validation**: the general `blockedSQLPattern` blocks all mutations including CREATE. The Database section uses its own permissive validation (`dangerousSQLPattern` + `safeSQLPattern` in `capfile/parse.go`) for schema DDL.
 - **formatJS for single-liners only**: Multi-line scripts are not reformatted — the naive formatter destroys destructuring parameters.
 - **Startup order**: `SyncCapsFromDisk` (file→DB) first, THEN `ExportAllCaps` (DB→file). Reversed order would overwrite hand-edited files.
 

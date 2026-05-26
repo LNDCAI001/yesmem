@@ -690,6 +690,10 @@ llm:
   # - You have a Pro/Max/Team plan without API key → set provider: "cli"
   #   The CLI provider calls the "claude" binary directly, so no API key is required.
   #   Make sure "claude" is in your PATH, or set claude_binary below.
+  #
+  # ⚠ OAuth tokens (from Claude Code login) are exclusively for Claude Code
+  #   and Claude.ai — using them with provider: "api" violates Anthropic's ToS.
+  #   If you logged into Claude Code via OAuth, use provider: "cli" only.
   provider: %s
 
   # Path to claude binary (only needed for provider: "cli" if not in PATH)

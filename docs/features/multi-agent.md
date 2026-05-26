@@ -36,12 +36,12 @@ Claude Code → API Request → Proxy extracts session_id from metadata.user_id
 
 ### 22.3 Polling (CronCreate)
 
-The proxy can only inject content when a request passes through. For idle sessions, CronCreate provides periodic polling:
+The proxy can only inject content when a request passes through. For idle sessions, the proxy provides a best-effort polling mechanism via Claude Code's CronCreate:
 
-- Dialog invitations include a DIREKTIVE instructing Claude to start a CronCreate (`*/1 * * * *`)
+- **Limitation:** CronCreate depends on Claude remembering to start it. If the session doesn't actively run the CronCreate command, polling stops — this is a behavioral limitation, not a technical bug. Polling is unreliable for multi-hour idle intervals.
+- When active, dialog invitations include a DIREKTIVE instructing Claude to start a CronCreate (`*/1 * * * *`)
 - CronCreate fires a prompt → triggers API request → proxy injects pending messages
 - The CronCreate prompt checks for `📨 DIALOG` blocks in the context, NOT via MCP check_messages (avoids echo issues)
-- **Limitation:** Claude can forget or fail to start the CronCreate — behavioral, not technical
 
 ### 22.4 Session Identity Resolution
 
@@ -146,7 +146,7 @@ Sub-agents can use different LLM backends:
 | Backend | CLI | Prompt Injection | MCP Tools | Status |
 |---------|-----|-----------------|-----------|--------|
 | `claude` (default) | Claude Code | PTY inject after 7s delay | Full YesMem proxy integration | Live |
-| `codex` | OpenAI Codex CLI | CLI argument (no PTY inject) | MCP-only (no proxy channel) | Blocked by Codex bug |
+| `codex` | OpenAI Codex CLI | CLI argument (no PTY inject) | MCP-only (no proxy channel) | Live (MCP-only) |
 | `opencode` | OpenCode CLI | PTY inject | Full YesMem integration | Live |
 
 ```
@@ -155,7 +155,7 @@ spawn_agent(project="yesmem", section="recherche", backend="codex")
 
 **Codex-specific:**
 - `--full-auto --no-alt-screen` flags
-- `approval_policy = "never"` in `~/.codex/config.toml` (should bypass prompts — currently bugged in v0.116.0)
+- Per-tool MCP approvals configured via `yesmem setup` (no global `approval_policy` override)
 - Communicates exclusively via MCP tools (scratchpad, send_to, remember)
 - YesMem registered as MCP server in Codex config
 

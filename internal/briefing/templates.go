@@ -69,6 +69,11 @@ const tmplKnowledge = `{{if .D.Decisions}}
 {{range .D.Teachings}}- {{.}}
 {{end}}{{if gt .D.MoreTeachings 0}}({{.D.MoreTeachings}} {{.S.MoreVia}} get_learnings("explicit_teaching"))
 {{end}}
+{{end}}{{if .D.Facts}}
+{{.S.ExternalFacts}}
+{{range .D.Facts}}- {{.}}
+{{end}}{{if gt .D.MoreFacts 0}}({{.D.MoreFacts}} {{.S.MoreVia}} get_learnings("fact"))
+{{end}}
 {{end}}`
 
 const tmplProject = `{{if or .D.Profile .D.Sessions}}
@@ -169,6 +174,8 @@ type KnowledgeData struct {
 	MorePatterns  int
 	Teachings     []string
 	MoreTeachings int
+	Facts         []string
+	MoreFacts     int
 	Pivots        []string
 	MorePivots    int
 }
@@ -317,6 +324,29 @@ func limitLearningsTruncated(learnings []models.Learning, max, maxChars int) (co
 			content = truncateAtSentence(content, maxChars)
 		}
 		contents = append(contents, fmt.Sprintf("[ID:%d] %s", l.ID, content))
+	}
+	if len(learnings) > max {
+		overflow = len(learnings) - max
+	}
+	return contents, overflow
+}
+
+// limitFacts works like limitLearningsTruncated but prefixes external claims with attribution.
+func limitFacts(learnings []models.Learning, max, maxChars int) (contents []string, overflow int) {
+	limit := max
+	if len(learnings) < limit {
+		limit = len(learnings)
+	}
+	for _, l := range learnings[:limit] {
+		content := l.Content
+		if len([]rune(content)) > maxChars {
+			content = truncateAtSentence(content, maxChars)
+		}
+		if l.Attribution != "" {
+			contents = append(contents, fmt.Sprintf("[ID:%d] External claim from %s: %s", l.ID, l.Attribution, content))
+		} else {
+			contents = append(contents, fmt.Sprintf("[ID:%d] %s", l.ID, content))
+		}
 	}
 	if len(learnings) > max {
 		overflow = len(learnings) - max

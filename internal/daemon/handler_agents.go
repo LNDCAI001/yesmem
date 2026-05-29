@@ -24,11 +24,7 @@ func (h *Handler) handleSpawnAgent(params map[string]any) Response {
 	callerSession, _ := params["caller_session"].(string)
 	backend, _ := params["backend"].(string)
 	if backend == "" {
-		if _, err := exec.LookPath("opencode"); err == nil {
-			backend = "opencode"
-		} else {
-			backend = "claude"
-		}
+		backend = "claude"
 	}
 	tokenBudget := 0
 	if tb, ok := params["token_budget"].(float64); ok && tb > 0 {
@@ -150,7 +146,6 @@ func (h *Handler) spawnAgentProcess(id, sessionID, project, section, prompt, soc
 			return
 		}
 		agentBin = resolveAgentBinary(backend)
-		// TUI mode — prompt wird via PTY inject gesendet
 		agentArgs = []string{}
 		if model != "" {
 			agentArgs = []string{"--model", fmt.Sprintf("deepseek/%s", model)}
@@ -226,9 +221,8 @@ func (h *Handler) spawnAgentProcess(id, sessionID, project, section, prompt, soc
 		"status":    "running",
 	})
 
-	// Inject initial prompt — only for Claude (Codex gets prompt as CLI arg)
-	// Inject initial prompt via PTY — for Claude and Opencode TUI (Codex gets prompt as CLI arg)
-	if backend != "codex" && !resume {
+	// Inject initial prompt — for Claude and opencode (both use PTY inject)
+	if (backend == "claude" || backend == "opencode") && !resume {
 		go func() {
 			injectPath := sockPath + ".inject"
 
@@ -429,7 +423,11 @@ func (h *Handler) handleStopAgent(params map[string]any) Response {
 		injectPath := agent.SockPath + ".inject"
 		conn, err := net.DialTimeout("unix", injectPath, 3*time.Second)
 		if err == nil {
-			_, writeErr := conn.Write([]byte("/exit\r"))
+			exitCmd := "/exit\r"
+			if agent.Backend == "opencode" {
+				exitCmd = "\x03" // Ctrl+C for opencode (no /exit command)
+			}
+			_, writeErr := conn.Write([]byte(exitCmd))
 			conn.Close()
 			stopped = writeErr == nil
 		}
@@ -492,7 +490,11 @@ func (h *Handler) handleStopAllAgents(params map[string]any) Response {
 		if a.SockPath != "" {
 			injectPath := a.SockPath + ".inject"
 			if conn, err := net.DialTimeout("unix", injectPath, 2*time.Second); err == nil {
-				conn.Write([]byte("/exit\r"))
+				exitCmd := "/exit\r"
+				if a.Backend == "opencode" {
+					exitCmd = "\x03" // Ctrl+C for opencode
+				}
+				conn.Write([]byte(exitCmd))
 				conn.Close()
 			}
 		}

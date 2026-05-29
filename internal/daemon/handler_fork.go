@@ -16,15 +16,16 @@ import (
 func (h *Handler) handleForkSetSessionFlavor(params map[string]any) Response {
 	sessionID, _ := params["session_id"].(string)
 	flavor, _ := params["flavor"].(string)
+	learningsCount := int64(intOr(params, "learnings_count", 0))
 	if sessionID == "" || flavor == "" {
 		return errorResponse("session_id and flavor required")
 	}
-	n, err := h.store.UpdateSessionFlavorOnlyEmpty(sessionID, flavor)
+	n, err := h.store.UpdateSessionFlavorOnlyEmpty(sessionID, flavor, learningsCount)
 	if err != nil {
 		return errorResponse(fmt.Sprintf("update session flavor: %v", err))
 	}
-	log.Printf("fork set session flavor: %q on %d learnings (session=%s)", flavor, n, sessionID)
-	return jsonResponse(map[string]any{"ok": true, "updated": n, "flavor": flavor})
+	log.Printf("fork set session flavor: %q on %d learnings (count=%d, session=%s)", flavor, n, learningsCount, sessionID)
+	return jsonResponse(map[string]any{"ok": true, "updated": n, "flavor": flavor, "learnings_count": learningsCount})
 }
 
 // handleForkExtractLearnings saves learnings extracted by a forked agent.
@@ -51,6 +52,7 @@ func (h *Handler) handleForkExtractLearnings(params map[string]any) Response {
 		AnticipatedQueries []string `json:"anticipated_queries"`
 		Importance         int      `json:"importance"`
 		EmotionalIntensity float64  `json:"emotional_intensity"`
+		Attribution        string   `json:"attribution"`
 	}
 	if err := json.Unmarshal([]byte(learningsJSON), &learnings); err != nil {
 		return errorResponse(fmt.Sprintf("unmarshal learnings: %v", err))
@@ -81,6 +83,7 @@ func (h *Handler) handleForkExtractLearnings(params map[string]any) Response {
 			Confidence:         1.0,
 			Importance:         l.Importance,
 			EmotionalIntensity: l.EmotionalIntensity,
+			Attribution:        l.Attribution,
 			CreatedAt:          time.Now(),
 			// Codex: keep fork-emitted unfinished subtypes, especially cap_idea.
 			TaskType:           l.TaskType,

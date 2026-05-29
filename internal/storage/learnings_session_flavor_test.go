@@ -80,7 +80,7 @@ func TestUpdateSessionFlavorOnlyEmpty(t *testing.T) {
 		CreatedAt: now, ModelUsed: "haiku",
 	})
 
-	n, err := s.UpdateSessionFlavorOnlyEmpty("s1", "Phase B")
+	n, err := s.UpdateSessionFlavorOnlyEmpty("s1", "Phase B", 2)
 	if err != nil {
 		t.Fatalf("update flavor: %v", err)
 	}

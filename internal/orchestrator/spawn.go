@@ -18,7 +18,7 @@ func BuildSpawnCommand(terminal, innerCmd, title string, innerArgs ...string) (b
 	case "kitty":
 		return "kitty", []string{"bash", "-ic", shellCmd}
 	case "gnome-terminal":
-		return "gnome-terminal", []string{"--wait", "--", "bash", "-ic", shellCmd}
+		return "gnome-terminal", []string{"--window", "--", "bash", "-ic", shellCmd}
 	case "alacritty":
 		return "alacritty", []string{"-e", "bash", "-ic", shellCmd}
 	case "wezterm":

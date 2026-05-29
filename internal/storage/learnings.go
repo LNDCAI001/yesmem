@@ -117,8 +117,8 @@ func (s *Store) InsertLearningBatch(learnings []*models.Learning) ([]int64, erro
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`INSERT INTO learnings
-		(session_id, category, content, project, confidence, created_at, expires_at, model_used, source, emotional_intensity, session_flavor, supersedes, importance, context, domain, trigger_rule, embedding_text, embedding_status, embedding_content_hash, embedded_at, source_file, source_hash, doc_chunk_ref, content_hash, task_type, turns_at_creation, source_msg_from, source_msg_to, origin_tool, source_agent, target_agent, canonical_project)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		(session_id, category, content, project, confidence, created_at, expires_at, model_used, source, emotional_intensity, session_flavor, supersedes, importance, context, domain, trigger_rule, embedding_text, embedding_status, embedding_content_hash, embedded_at, source_file, source_hash, doc_chunk_ref, content_hash, task_type, turns_at_creation, source_msg_from, source_msg_to, origin_tool, source_agent, target_agent, canonical_project, attribution)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return nil, fmt.Errorf("prepare: %w", err)
 	}
@@ -187,7 +187,7 @@ func (s *Store) InsertLearningBatch(learnings []*models.Learning) ([]int64, erro
 		result, err := stmt.Exec(
 			l.SessionID, l.Category, l.Content, l.Project, l.Confidence,
 			fmtTime(l.CreatedAt), expiresAt, l.ModelUsed, source, l.EmotionalIntensity, l.SessionFlavor, l.Supersedes, importance,
-			l.Context, l.Domain, l.TriggerRule, l.EmbeddingText, embeddingStatus, embeddingContentHash, l.SourceFile, l.SourceHash, l.DocChunkRef, l.ContentHash, l.TaskType, turnCounts[turnKey], sourceMsgFrom, sourceMsgTo, l.OriginTool, srcAgent, tgtAgent, l.CanonicalProject)
+			l.Context, l.Domain, l.TriggerRule, l.EmbeddingText, embeddingStatus, embeddingContentHash, l.SourceFile, l.SourceHash, l.DocChunkRef, l.ContentHash, l.TaskType, turnCounts[turnKey], sourceMsgFrom, sourceMsgTo, l.OriginTool, srcAgent, tgtAgent, l.CanonicalProject, l.Attribution)
 		if err != nil {
 			return ids, fmt.Errorf("insert learning: %w", err)
 		}
@@ -323,7 +323,7 @@ func (s *Store) RebuildFTSEnriched() (int, error) {
 	return count, nil
 }
 
-// BuildSearchableText combines content with keywords, anticipated_queries, and entities.
+// BuildSearchableText combines content with keywords, anticipated_queries, entities, and attribution.
 // This makes metadata searchable via BM25 without changing the stored content.
 func BuildSearchableText(content string, keywords, anticipatedQueries, entities []string) string {
 	if len(keywords) == 0 && len(anticipatedQueries) == 0 && len(entities) == 0 {
@@ -355,7 +355,8 @@ func (s *Store) GetLearningsByCategory(category, project string, limit int) ([]m
 		COALESCE(match_count, 0), COALESCE(inject_count, 0), COALESCE(use_count, 0), COALESCE(save_count, 0), COALESCE(stability, 30.0),
 		COALESCE(context, ''), COALESCE(domain, 'code'), COALESCE(trigger_rule, ''), COALESCE(embedding_text, ''),
 		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1),
-		COALESCE(canonical_project, '')
+		COALESCE(canonical_project, ''),
+		COALESCE(attribution, '')
 		FROM learnings WHERE superseded_by IS NULL
 		AND category = ?
 		AND (canonical_project = ? OR canonical_project = '')
@@ -378,7 +379,8 @@ func (s *Store) GetLearningsSince(project string, since time.Time, limit int) ([
 		COALESCE(match_count, 0), COALESCE(inject_count, 0), COALESCE(use_count, 0), COALESCE(save_count, 0), COALESCE(stability, 30.0),
 		COALESCE(context, ''), COALESCE(domain, 'code'), COALESCE(trigger_rule, ''), COALESCE(embedding_text, ''),
 		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1),
-		COALESCE(canonical_project, '')
+		COALESCE(canonical_project, ''),
+		COALESCE(attribution, '')
 		FROM learnings WHERE superseded_by IS NULL
 		AND (expires_at IS NULL OR expires_at > ?)
 		AND created_at > ?
@@ -486,7 +488,8 @@ func (s *Store) GetActiveLearnings(category, project, since, before string, limi
 		COALESCE(match_count, 0), COALESCE(inject_count, 0), COALESCE(use_count, 0), COALESCE(save_count, 0), COALESCE(stability, 30.0),
 		COALESCE(context, ''), COALESCE(domain, 'code'), COALESCE(trigger_rule, ''), COALESCE(embedding_text, ''),
 		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1),
-		COALESCE(canonical_project, '')
+		COALESCE(canonical_project, ''),
+		COALESCE(attribution, '')
 		FROM learnings WHERE superseded_by IS NULL
 		AND (expires_at IS NULL OR expires_at > ?)`
 	args := []any{fmtTime(time.Now())}
@@ -543,7 +546,8 @@ func (s *Store) GetActiveLearningsBySessionIDs(sessionIDs []string) ([]models.Le
 		COALESCE(match_count, 0), COALESCE(inject_count, 0), COALESCE(use_count, 0), COALESCE(save_count, 0), COALESCE(stability, 30.0),
 		COALESCE(context, ''), COALESCE(domain, 'code'), COALESCE(trigger_rule, ''), COALESCE(embedding_text, ''),
 		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1),
-		COALESCE(canonical_project, '')
+		COALESCE(canonical_project, ''),
+		COALESCE(attribution, '')
 		FROM learnings
 		WHERE superseded_by IS NULL
 		AND (expires_at IS NULL OR expires_at > ?)
@@ -592,7 +596,9 @@ func (s *Store) GetLearning(id int64) (*models.Learning, error) {
 		COALESCE(hit_count, 0), COALESCE(emotional_intensity, 0.0), last_hit_at, COALESCE(session_flavor, ''), valid_until, supersedes, COALESCE(importance, 3), supersede_status, COALESCE(noise_count, 0), COALESCE(fail_count, 0),
 		COALESCE(match_count, 0), COALESCE(inject_count, 0), COALESCE(use_count, 0), COALESCE(save_count, 0), COALESCE(stability, 30.0),
 		COALESCE(context, ''), COALESCE(domain, 'code'), COALESCE(trigger_rule, ''), COALESCE(embedding_text, ''),
-		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1)
+		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1),
+		COALESCE(canonical_project, ''),
+		COALESCE(attribution, '')
 		FROM learnings WHERE id = ?`, id)
 
 	l := &models.Learning{}
@@ -603,7 +609,8 @@ func (s *Store) GetLearning(id int64) (*models.Learning, error) {
 		&supersededBy, &supersedeReason, &createdAt, &expiresAt, &l.ModelUsed, &source, &l.HitCount, &l.EmotionalIntensity, &lastHitAt, &l.SessionFlavor, &validUntil, &supersedes, &l.Importance, &supersedeStatus, &l.NoiseCount, &l.FailCount,
 		&l.MatchCount, &l.InjectCount, &l.UseCount, &l.SaveCount, &l.Stability,
 		&l.Context, &l.Domain, &l.TriggerRule, &l.EmbeddingText,
-		&l.SourceFile, &l.SourceHash, &l.DocChunkRef, &l.TaskType, &l.TurnsAtCreation, &l.OriginTool, &l.SourceMsgFrom, &l.SourceMsgTo)
+		&l.SourceFile, &l.SourceHash, &l.DocChunkRef, &l.TaskType, &l.TurnsAtCreation, &l.OriginTool, &l.SourceMsgFrom, &l.SourceMsgTo,
+		&l.CanonicalProject, &l.Attribution)
 	if err != nil {
 		return nil, fmt.Errorf("get learning %d: %w", id, err)
 	}
@@ -733,7 +740,8 @@ func (s *Store) GetTriggeredLearnings(project string) ([]models.Learning, error)
 		COALESCE(match_count, 0), COALESCE(inject_count, 0), COALESCE(use_count, 0), COALESCE(save_count, 0), COALESCE(stability, 30.0),
 		COALESCE(context, ''), COALESCE(domain, 'code'), COALESCE(trigger_rule, ''), COALESCE(embedding_text, ''),
 		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1),
-		COALESCE(canonical_project, '')
+		COALESCE(canonical_project, ''),
+		COALESCE(attribution, '')
 		FROM learnings
 		WHERE superseded_by IS NULL
 		AND trigger_rule != '' AND trigger_rule IS NOT NULL
@@ -933,11 +941,13 @@ func (s *Store) GetRecentNarratives(project string, limit int) ([]models.Learnin
 		COALESCE(l.match_count, 0), COALESCE(l.inject_count, 0), COALESCE(l.use_count, 0), COALESCE(l.save_count, 0), COALESCE(l.stability, 30.0),
 		COALESCE(l.context, ''), COALESCE(l.domain, 'code'), COALESCE(l.trigger_rule, ''), COALESCE(l.embedding_text, ''),
 		COALESCE(l.source_file, ''), COALESCE(l.source_hash, ''), COALESCE(l.doc_chunk_ref, 0), COALESCE(l.task_type, ''), COALESCE(l.turns_at_creation, 0), COALESCE(l.origin_tool, ''), COALESCE(l.source_msg_from, -1), COALESCE(l.source_msg_to, -1),
-		COALESCE(l.canonical_project, '')
+		COALESCE(l.canonical_project, ''),
+		COALESCE(l.attribution, '')
 		FROM learnings l
 		LEFT JOIN sessions s ON l.session_id = s.id
 		WHERE l.category = 'narrative' AND l.canonical_project = ? AND l.superseded_by IS NULL
 		AND (s.message_count IS NULL OR s.message_count = 0 OR s.message_count >= 10)
+		AND (s.flavor_learnings_count != 0 OR s.flavor_learnings_count IS NULL) /* -1=unknown, >0=grounded, NULL=no session */
 		ORDER BY l.created_at DESC LIMIT ?`, project, limit)
 	if err != nil {
 		return nil, fmt.Errorf("get recent narratives: %w", err)
@@ -962,7 +972,7 @@ func scanLearnings(rows interface {
 			&l.MatchCount, &l.InjectCount, &l.UseCount, &l.SaveCount, &l.Stability,
 			&l.Context, &l.Domain, &l.TriggerRule, &l.EmbeddingText,
 			&l.SourceFile, &l.SourceHash, &l.DocChunkRef, &l.TaskType, &l.TurnsAtCreation, &l.OriginTool, &l.SourceMsgFrom, &l.SourceMsgTo,
-			&l.CanonicalProject); err != nil {
+			&l.CanonicalProject, &l.Attribution); err != nil {
 			return nil, err
 		}
 		l.CreatedAt = parseTime(createdAt)

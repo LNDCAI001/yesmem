@@ -425,6 +425,7 @@ var migrations = []string{
 	`ALTER TABLE scheduled_jobs ADD COLUMN sandbox TEXT NOT NULL DEFAULT 'standard'`,
 	`ALTER TABLE scheduled_jobs ADD COLUMN interval_seconds INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE scheduled_jobs ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE scheduled_jobs ADD COLUMN backend TEXT NOT NULL DEFAULT ''`,
 	// v0.57: bundle caps — disambiguate which Scripts[] entry a job uses
 	`ALTER TABLE scheduled_jobs ADD COLUMN script_name TEXT NOT NULL DEFAULT ''`,
 	`CREATE TABLE IF NOT EXISTS bash_job_runs (
@@ -451,12 +452,16 @@ var migrations = []string{
 	`ALTER TABLE learnings ADD COLUMN target_agent TEXT NOT NULL DEFAULT ''`,
 	// v0.60: Backfill learnings.source_agent from sessions.source_agent (idempotent).
 	`UPDATE learnings SET source_agent = COALESCE((SELECT s.source_agent FROM sessions s WHERE s.id = learnings.session_id), 'claude') WHERE source_agent = ''`,
-	// v0.61: Canonical project — family-scoped learnings across worktree/main boundaries
-	`ALTER TABLE learnings ADD COLUMN canonical_project TEXT NOT NULL DEFAULT ''`,
-	`UPDATE learnings SET canonical_project = project`,
-	`UPDATE learnings SET canonical_project = 'yesmem' WHERE project IN ('checkcodebase', 'bridge-langgraph-bridge', 'opencode-proxy', 'feat+capability-memory', 'feat+security-hardening', 'codex-anpassungen', 'worktree-scoring-fixes', 'forked-agent-proxy', 'briefing-injection')`,
-	`CREATE INDEX IF NOT EXISTS idx_learnings_canonical ON learnings(canonical_project, superseded_by)`,
-}
+		// v0.61: Canonical project — family-scoped learnings across worktree/main boundaries
+		`ALTER TABLE learnings ADD COLUMN canonical_project TEXT NOT NULL DEFAULT ''`,
+		`UPDATE learnings SET canonical_project = project`,
+		`UPDATE learnings SET canonical_project = 'yesmem' WHERE project IN ('checkcodebase', 'bridge-langgraph-bridge', 'opencode-proxy', 'feat+capability-memory', 'feat+security-hardening', 'codex-anpassungen', 'worktree-scoring-fixes', 'forked-agent-proxy', 'briefing-injection')`,
+		`CREATE INDEX IF NOT EXISTS idx_learnings_canonical ON learnings(canonical_project, superseded_by)`,
+		// v0.62: Attribution field for external source tracking
+		`ALTER TABLE learnings ADD COLUMN attribution TEXT NOT NULL DEFAULT ''`,
+		// v0.63: Flavor learnings count on sessions for grounding check
+		`ALTER TABLE sessions ADD COLUMN flavor_learnings_count INTEGER NOT NULL DEFAULT -1`,
+	}
 
 // messagesMigrations runs against messages.db (separate from yesmem.db migrations).
 var messagesMigrations = []string{
@@ -483,7 +488,8 @@ const tableSessions = `CREATE TABLE IF NOT EXISTS sessions (
 	source_agent      TEXT DEFAULT 'claude',
 	extracted_at      TEXT,
 	narrative_at      TEXT,
-	skip_extraction   BOOLEAN DEFAULT 0
+	skip_extraction   BOOLEAN DEFAULT 0,
+	flavor_learnings_count INTEGER NOT NULL DEFAULT -1
 )`
 
 const tableMessages = `CREATE TABLE IF NOT EXISTS messages (
@@ -526,6 +532,7 @@ const tableLearnings = `CREATE TABLE IF NOT EXISTS learnings (
 	domain              TEXT DEFAULT 'code',
 	trigger_rule        TEXT DEFAULT '',
 	embedding_text      TEXT DEFAULT '',
+	embedding_vector    BLOB,
 	embedding_status    TEXT DEFAULT 'done',
 	embedding_content_hash TEXT DEFAULT '',
 	embedded_at         TEXT,
@@ -551,7 +558,8 @@ const tableLearnings = `CREATE TABLE IF NOT EXISTS learnings (
 	origin_tool         TEXT NOT NULL DEFAULT '',
 	source_agent        TEXT NOT NULL DEFAULT '',
 	target_agent        TEXT NOT NULL DEFAULT '',
-	canonical_project   TEXT NOT NULL DEFAULT ''
+	canonical_project   TEXT NOT NULL DEFAULT '',
+	attribution         TEXT NOT NULL DEFAULT ''
 )`
 
 const tableAssociations = `CREATE TABLE IF NOT EXISTS associations (
@@ -882,6 +890,7 @@ const tableScheduledJobs = `CREATE TABLE IF NOT EXISTS scheduled_jobs (
 	sandbox      TEXT NOT NULL DEFAULT 'standard',
 	interval_seconds INTEGER NOT NULL DEFAULT 0,
 	model        TEXT NOT NULL DEFAULT '',
+	backend      TEXT NOT NULL DEFAULT '',
 	last_run     DATETIME,
 	created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 )`

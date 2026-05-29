@@ -41,12 +41,21 @@ func (s *Store) GetSessionFlavorsForSession(sessionID string) ([]map[string]any,
 
 // UpdateSessionFlavorOnlyEmpty sets session_flavor only on learnings that don't already have one.
 // This preserves earlier phase flavors when extraction runs multiple times on long sessions.
-func (s *Store) UpdateSessionFlavorOnlyEmpty(sessionID, flavor string) (int64, error) {
+// Also stores the learnings_count on the session for flavor grounding checks.
+func (s *Store) UpdateSessionFlavorOnlyEmpty(sessionID, flavor string, learningsCount int64) (int64, error) {
 	result, err := s.db.Exec(`UPDATE learnings SET session_flavor = ?
 		WHERE session_id = ? AND superseded_by IS NULL
 		AND (session_flavor = '' OR session_flavor IS NULL)`, flavor, sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("update session flavor only empty: %w", err)
 	}
+
+	// Persist learnings count on session for grounding checks
+	if learningsCount >= 0 {
+		if _, err := s.db.Exec(`UPDATE sessions SET flavor_learnings_count = ? WHERE id = ?`, learningsCount, sessionID); err != nil {
+			return 0, fmt.Errorf("persist flavor_learnings_count for session %s: %w", sessionID, err)
+		}
+	}
+
 	return result.RowsAffected()
 }

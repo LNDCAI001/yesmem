@@ -88,6 +88,9 @@ func (h *Handler) handleRemember(params map[string]any) Response {
 	if taskType, ok := params["task_type"].(string); ok {
 		l.TaskType = taskType
 	}
+	if attribution, ok := params["attribution"].(string); ok {
+		l.Attribution = attribution
+	}
 
 	// Generate enriched embedding text for V2 learnings
 	if l.IsV2() {

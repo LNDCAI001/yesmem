@@ -491,6 +491,7 @@ func (g *Generator) renderKnowledge(s Strings, learnings []models.Learning) stri
 	decisions, moreDecisions := limitLearningsTruncated(groups["decision"], max, 120)
 	patterns, morePatterns := limitLearningsTruncated(groups["pattern"], max, 120)
 	teachings, moreTeachings := limitLearningsTruncated(groups["explicit_teaching"], max, 120)
+	facts, moreFacts := limitFacts(groups["fact"], max, 120)
 	pivots, morePivots := limitLearnings(groups["pivot_moment"], 5)
 
 	return renderTemplate("knowledge", tmplKnowledge, s, KnowledgeData{
@@ -502,6 +503,8 @@ func (g *Generator) renderKnowledge(s Strings, learnings []models.Learning) stri
 		MorePatterns:  morePatterns,
 		Teachings:     teachings,
 		MoreTeachings: moreTeachings,
+		Facts:         facts,
+		MoreFacts:     moreFacts,
 		Pivots:        pivots,
 		MorePivots:    morePivots,
 	})

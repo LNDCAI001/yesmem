@@ -34,7 +34,8 @@ func (s *Store) QueryFacts(opts QueryFactsOpts) ([]models.Learning, error) {
 		COALESCE(l.match_count, 0), COALESCE(l.inject_count, 0), COALESCE(l.use_count, 0), COALESCE(l.save_count, 0), COALESCE(l.stability, 30.0),
 		COALESCE(l.context, ''), COALESCE(l.domain, 'code'), COALESCE(l.trigger_rule, ''), COALESCE(l.embedding_text, ''),
 		COALESCE(l.source_file, ''), COALESCE(l.source_hash, ''), COALESCE(l.doc_chunk_ref, 0), COALESCE(l.task_type, ''), COALESCE(l.turns_at_creation, 0), COALESCE(l.origin_tool, ''), COALESCE(l.source_msg_from, -1), COALESCE(l.source_msg_to, -1),
-		COALESCE(l.canonical_project, '')`
+		COALESCE(l.canonical_project, ''),
+		COALESCE(l.attribution, '')`
 
 	query := `SELECT DISTINCT ` + selectCols + ` FROM learnings l`
 	var joins []string
@@ -114,7 +115,8 @@ func (s *Store) SearchUnfinished(query, project string) ([]models.Learning, erro
 		COALESCE(l.match_count, 0), COALESCE(l.inject_count, 0), COALESCE(l.use_count, 0), COALESCE(l.save_count, 0), COALESCE(l.stability, 30.0),
 		COALESCE(l.context, ''), COALESCE(l.domain, 'code'), COALESCE(l.trigger_rule, ''), COALESCE(l.embedding_text, ''),
 		COALESCE(l.source_file, ''), COALESCE(l.source_hash, ''), COALESCE(l.doc_chunk_ref, 0), COALESCE(l.task_type, ''), COALESCE(l.turns_at_creation, 0), COALESCE(l.origin_tool, ''), COALESCE(l.source_msg_from, -1), COALESCE(l.source_msg_to, -1),
-		COALESCE(l.canonical_project, '')
+		COALESCE(l.canonical_project, ''),
+		COALESCE(l.attribution, '')
 		FROM learnings_fts
 		JOIN learnings l ON l.id = learnings_fts.rowid
 		WHERE learnings_fts MATCH ?
@@ -372,7 +374,8 @@ func (s *Store) FindLearningsByEntityMatch(entities []string, project string) ([
 		COALESCE(l.match_count, 0), COALESCE(l.inject_count, 0), COALESCE(l.use_count, 0), COALESCE(l.save_count, 0), COALESCE(l.stability, 30.0),
 		COALESCE(l.context, ''), COALESCE(l.domain, 'code'), COALESCE(l.trigger_rule, ''), COALESCE(l.embedding_text, ''),
 		COALESCE(l.source_file, ''), COALESCE(l.source_hash, ''), COALESCE(l.doc_chunk_ref, 0), COALESCE(l.task_type, ''), COALESCE(l.turns_at_creation, 0), COALESCE(l.origin_tool, ''), COALESCE(l.source_msg_from, -1), COALESCE(l.source_msg_to, -1),
-		COALESCE(l.canonical_project, '')
+		COALESCE(l.canonical_project, ''),
+		COALESCE(l.attribution, '')
 		FROM learnings l
 		JOIN learning_entities le ON le.learning_id = l.id
 		WHERE le.value IN (` + strings.Join(placeholders, ",") + `)

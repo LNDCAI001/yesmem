@@ -264,6 +264,7 @@ func formatRemember(raw json.RawMessage) string {
 		ModelUsed    string `json:"model_used"`
 		SupersedesID int64 `json:"supersedes_id"`
 		Message      string `json:"message"`
+		Attribution  string `json:"attribution"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return string(raw)
@@ -287,6 +288,9 @@ func formatRemember(raw json.RawMessage) string {
 	}
 	if data.SupersedesID > 0 {
 		sb.WriteString(fmt.Sprintf("  Supersedes: #%d\n", data.SupersedesID))
+	}
+	if data.Attribution != "" {
+		sb.WriteString(fmt.Sprintf("  Source:     %s\n", data.Attribution))
 	}
 	sb.WriteString(fmt.Sprintf("  Content:    %s", data.Content))
 	return sb.String()
@@ -374,6 +378,7 @@ func formatLearnings(raw json.RawMessage) string {
 		TaskType       string   `json:"task_type,omitempty"`
 		SessionID      string   `json:"session_id,omitempty"`
 		SupersedeReason string  `json:"supersede_reason,omitempty"`
+		Attribution    string   `json:"attribution,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &items); err != nil {
 		// Maybe it's wrapped in an object
@@ -405,6 +410,9 @@ func formatLearnings(raw json.RawMessage) string {
 			cat = l.Category + ":" + l.TaskType
 		}
 		sb.WriteString(fmt.Sprintf("[#%d %s %s %s u:%d/i:%d] %s\n", l.ID, proj, cat, age, l.UseCount, l.InjectCount, l.Content))
+		if l.Attribution != "" {
+			sb.WriteString(fmt.Sprintf("  source: %s\n", l.Attribution))
+		}
 		if l.SessionID != "" {
 			sb.WriteString(fmt.Sprintf("  session: %s\n", l.SessionID))
 		}
@@ -595,7 +603,10 @@ func (s *Server) proxyCallWithThreadID(method string, formatter func(json.RawMes
 			return mcplib.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
 		}
 		if formatter != nil {
+		if formatter != nil {
 			return mcplib.NewToolResultText(formatter(result)), nil
+		}
+		return mcplib.NewToolResultText(string(result)), nil
 		}
 		return mcplib.NewToolResultText(string(result)), nil
 	}
@@ -866,6 +877,7 @@ func (s *Server) registerTools() {
 			mcplib.WithString("context", mcplib.Description("Why/when is this relevant?")),
 			mcplib.WithString("domain", mcplib.Description("code|marketing|legal|finance|general")),
 			mcplib.WithString("task_type", mcplib.Description("For unfinished: task|idea|blocked|stale")),
+			mcplib.WithString("attribution", mcplib.Description("External source: e.g. 'Fullerenes (competitor)', 'mem0 docs'. Empty = own experience.")),
 		), s.proxyCallFormat("remember", formatRemember))
 
 	s.srv.AddTool(

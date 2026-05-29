@@ -38,7 +38,8 @@ func (s *Store) GetPendingLearningsForEmbedding(limit int) ([]models.Learning, e
 		COALESCE(match_count, 0), COALESCE(inject_count, 0), COALESCE(use_count, 0), COALESCE(save_count, 0), COALESCE(stability, 30.0),
 		COALESCE(context, ''), COALESCE(domain, 'code'), COALESCE(trigger_rule, ''), COALESCE(embedding_text, ''),
 		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1),
-		COALESCE(canonical_project, '')
+		COALESCE(canonical_project, ''),
+		COALESCE(attribution, '')
 		FROM learnings
 		WHERE (expires_at IS NULL OR expires_at > ?)
 		AND embedding_vector IS NULL
@@ -160,7 +161,8 @@ func (s *Store) GetAllLearningsForEmbedding() ([]models.Learning, error) {
 		COALESCE(match_count, 0), COALESCE(inject_count, 0), COALESCE(use_count, 0), COALESCE(save_count, 0), COALESCE(stability, 30.0),
 		COALESCE(context, ''), COALESCE(domain, 'code'), COALESCE(trigger_rule, ''), COALESCE(embedding_text, ''),
 		COALESCE(source_file, ''), COALESCE(source_hash, ''), COALESCE(doc_chunk_ref, 0), COALESCE(task_type, ''), COALESCE(turns_at_creation, 0), COALESCE(origin_tool, ''), COALESCE(source_msg_from, -1), COALESCE(source_msg_to, -1),
-		COALESCE(canonical_project, '')
+		COALESCE(canonical_project, ''),
+		COALESCE(attribution, '')
 		FROM learnings
 		ORDER BY category, created_at DESC`
 

@@ -92,6 +92,7 @@ type Learning struct {
 	// V2 fields (empty for legacy learnings)
 	Context            string   `json:"context,omitempty"`
 	Domain             string   `json:"domain,omitempty"`
+	Attribution        string   `json:"attribution,omitempty"`
 	TriggerRule        string   `json:"trigger_rule,omitempty"`
 	EmbeddingText      string   `json:"embedding_text,omitempty"`
 	Entities           []string `json:"entities,omitempty"`
@@ -130,6 +131,24 @@ type Learning struct {
 	CurrentTurnCount     int64   `json:"current_turn_count,omitempty"` // set by caller before scoring
 }
 
+// HasMetadata returns true if the learning has any metadata beyond its core fields.
+func (l *Learning) HasMetadata() bool {
+	return len(l.Entities) > 0 || len(l.Actions) > 0 || len(l.Keywords) > 0 ||
+		len(l.AnticipatedQueries) > 0 || l.TriggerRule != "" || l.Context != "" ||
+		l.SourceFile != "" || l.SourceHash != "" || l.DocChunkRef > 0 ||
+		l.TaskType != "" || len(l.Attribution) > 0
+}
+
+// ShortString returns a compact one-line representation of the learning.
+func (l *Learning) ShortString() string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("[%s] %s", l.Category, l.Content))
+	if l.Attribution != "" {
+		sb.WriteString(fmt.Sprintf(" (via %s)", l.Attribution))
+	}
+	return sb.String()
+}
+
 // IsActive returns true if this learning has not been superseded and has not expired.
 func (l *Learning) IsActive() bool {
 	if l.SupersededBy != nil {
@@ -166,6 +185,10 @@ func (l *Learning) BuildEmbeddingText() string {
 	if l.TriggerRule != "" {
 		sb.WriteString(" | Trigger: ")
 		sb.WriteString(l.TriggerRule)
+	}
+	if l.Attribution != "" {
+		sb.WriteString(" | Attribution: ")
+		sb.WriteString(l.Attribution)
 	}
 	if len(l.Entities) > 0 {
 		sb.WriteString(" | Entities: ")
@@ -374,7 +397,7 @@ var validCategories = map[string]bool{
 	"explicit_teaching": true, "gotcha": true, "decision": true,
 	"pattern": true, "preference": true, "unfinished": true,
 	"relationship": true, "strategic": true, "pivot_moment": true,
-	"cap": true,
+	"cap": true, "fact": true,
 }
 
 // IsValidCategory checks if a learning category string is valid.

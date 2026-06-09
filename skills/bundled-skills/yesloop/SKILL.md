@@ -20,7 +20,8 @@ When invoked from an interactive session, **do NOT execute the pipeline yourself
    - Easy cleanup: delete worktree + branch if abandoned
 2. Write the task to scratchpad with worktree path: `scratchpad_write(project="<project>", section="yesloop-<task-slug>", content="Worktree: <path>\nTask: <description>\n\nUse the yesloop autonomous pipeline (5 phases). Report to scratchpad.")`
 3. Spawn TUI agent: `yesmem_spawn_agent(project="<project>", section="yesloop-<task-slug>", backend="opencode", work_dir="<worktree-path>")`
-4. Wait 8s for PTY injection, then relay backup: `yesmem_relay_agent(to="<agent-id>", content="Read scratchpad and begin yesloop pipeline.")`
+4. Wait 15s for opencode TUI to load + PTY injection to deliver the startup prompt
+5. **Relay kick (backup):** `yesmem_relay_agent(to="<agent-id>", content="Read scratchpad and begin yesloop pipeline.")` — backup if PTY is slow
 5. Confirm: "Agent spawned in worktree — sichtbar im Terminal."
 
 **Only run inline if:** user explicitly says `--inline` or task is < 2 min trivial.
@@ -57,6 +58,7 @@ When invoked from an interactive session, **do NOT execute the pipeline yourself
 - Work through steps one at a time
 - Mark each step in_progress → completed via todowrite
 - Commit after each logical unit
+- **Before each step:** quick DRIFT CHECK — am I still on the original goal?
 - **Blocker resolution** (replace user interaction):
   - Known pattern → apply workaround, document in scratchpad
   - Uncertain → 2 self-debug rounds, then decide and document
@@ -67,7 +69,7 @@ When invoked from an interactive session, **do NOT execute the pipeline yourself
 ### Phase 4: VERIFY
 - Run tests, linters, type checks
 - Review own diff: correctness, simplification, no scope creep
-- If issues found → fix and re-verify (max 3 cycles)
+- If issues found → fix and re-verify (**max 3 cycles** — see CONVERGENCE GATE)
 - → scratchpad_write: verification results
 
 ### Phase 5: FINISH
@@ -78,17 +80,71 @@ When invoked from an interactive session, **do NOT execute the pipeline yourself
 - **Do NOT delete worktree** — keep it until user confirms merge
 - If scheduled: schedule next iteration
 
+## Guardrails (Prevent Agent Drift)
+
+### DRIFT CHECK — Every phase transition
+
+Before moving to the next phase, verify you're still on track:
+
+1. Re-read the original goal from `scratchpad_read(project, section)` or `get_plan()`
+2. Compare current state against original scope:
+   - **Still on track?** → proceed
+   - **Minor drift?** → document in scratchpad, correct course, proceed
+   - **Major divergence?** → **STOP.** scratchpad_write("⚠️ DRIFT: <what changed>") + send_to orchestrator: "DRIFT: <details>. Continue or abort?"
+
+What counts as drift:
+- Touching files outside the original scope (scope creep)
+- Solving a different problem than the one given
+- Adding features not requested ("while I'm here, I'll also...")
+- Changing architecture without justification
+
+### CONVERGENCE GATE — When progress stalls
+
+If you're cycling without making progress, recognize it and stop:
+
+| Pattern | Detection | Action |
+|---|---|---|
+| Edit-Test loop | Same test fails 3+ times with different fixes | **STOP.** You don't understand the problem. scratchpad_write + send_to: "STUCK: <test> fails after 3 attempts. Need human guidance." |
+| Rewrite loop | Reverting your own changes and trying again | **STOP after 2 rewrites.** The approach is wrong, not the implementation. |
+| Search loop | Searching for the same information repeatedly | Cache results in scratchpad. If found nothing after 3 searches, document as unknown and move on. |
+| Fix-then-break | Each fix breaks something else | **STOP after 2 cascades.** The code is too coupled for safe autonomous changes. |
+
+**Hard limit:** If you make no forward progress (no completed steps in todowrite) for 5 consecutive turns → escalate and stop.
+
 ## State Management (Collapse Survival)
 
 Your state lives in yesmem, not context. On every wake-up:
 1. `get_plan()` — restore active goal and progress
 2. `scratchpad_read(project, section)` — restore detailed context
-3. Reconstruct current phase and next step
-4. Continue where you left off
+3. **`check_messages`** — poll for messages from orchestrator or other agents (openCode has no push, DB-poll is the only reliable path)
+4. Reconstruct current phase and next step
+5. Continue where you left off
 
 ## TUI Agent Mode (You were spawned in a worktree)
 
 You are a **subagent** — spawned by the main session via yesmem_spawn_agent. You run in an isolated git worktree, visible in a terminal window.
+
+### ⛔ WORKTREE GUARDRAIL — Execute BEFORE any file modification
+
+**You MUST verify you are in the correct worktree before touching ANY file.** Agents have been observed working in main instead of their worktree — this is a hard failure.
+
+On startup, before ANY other action:
+
+```
+1. pwd                           → must match the worktree path from scratchpad
+2. git rev-parse --show-toplevel → must be the worktree, NOT the main repo
+3. git branch --show-current     → must be yesloop/<task-slug>, NOT main
+4. git status --short            → must be clean (no uncommitted changes from main)
+```
+
+**IF ANY CHECK FAILS:**
+- **STOP immediately.** Do not create, edit, or delete any file.
+- scratchpad_write + send_to orchestrator: "⛔ WORKTREE GUARD FAILED: pwd=<actual>, branch=<actual>. Expected worktree at <expected>. I will NOT proceed until this is fixed."
+- **Do NOT proceed.** Wait for the orchestrator to respawn you correctly.
+
+**IF ALL CHECKS PASS:**
+- scratchpad_write: "✅ Worktree verified: <path>, branch yesloop/<slug>, clean."
+- Proceed with the pipeline.
 
 **Identify yourself on startup:**
 1. `whoami` → reveals your `session_id` and `is_agent: true`
@@ -104,8 +160,12 @@ You are a **subagent** — spawned by the main session via yesmem_spawn_agent. Y
 
 **Completion — MUST do all three:**
 1. `scratchpad_write(content="✅ DONE: <summary>. PR: <url>")` — final write to your section
-2. `send_to(target=<caller_session>, content="DONE: <summary>. PR: <url>")` — notify orchestrator
+2. `send_to(target=<caller_session>, content="DONE: <summary>. PR: <url>")` — notify orchestrator (stored in DB, orchestrator must poll)
 3. `set_plan(...)` mark as completed — survives context collapse
+
+**NOTE:** `send_to` stores the message in the DB but push delivery is unreliable for OpenCode targets. The orchestrator polls `check_messages` periodically. Use scratchpad as the primary completion channel — it's DB-based and always readable.
+
+**Periodic polling:** Every 5 turns, call `check_messages` to see if the orchestrator sent new instructions or cancellation.
 
 **Self-directed research:** code tools, memory, docs, web. Never wait for user.
 
@@ -116,9 +176,11 @@ You are a **subagent** — spawned by the main session via yesmem_spawn_agent. Y
 | Simple fix, clear solution | Execute directly |
 | 2-3 approaches, unclear best | Pick one, document rationale, proceed |
 | Need to change scope | Document, proceed if minor; escalate if major |
-| Tests fail repeatedly | Debug max 3 cycles, then document workaround |
+| Tests fail repeatedly | Debug max 3 cycles → if still failing, activate CONVERGENCE GATE |
 | Irreversible action (force-push, drop table) | Pause, request confirmation |
 | 3 consecutive ticks with nothing to do | End the loop, report idle |
+| Scope creep detected | Activate DRIFT CHECK, correct course or escalate |
+| Same approach failed 3x | Activate CONVERGENCE GATE — stop and escalate |
 
 ## Communication
 
@@ -131,6 +193,8 @@ You are a **subagent** — spawned by the main session via yesmem_spawn_agent. Y
 
 - Do NOT write design documents unless the task is architectural
 - Do NOT ask clarifying questions — infer from context, document assumptions
-- Do NOT scope-creep beyond the given task
-- Do NOT run endlessly — 3 idle ticks = stop
+- Do NOT scope-creep beyond the given task — see DRIFT CHECK
+- Do NOT run endlessly — 3 idle ticks = stop. See CONVERGENCE GATE for stall detection
 - Do NOT modify agent config files (.claude/, SYSTEM.md, yesloop.md, etc.)
+- Do NOT keep trying the same approach — if 3 attempts fail, the approach is wrong, not the implementation
+- **⛔ Do NOT work in main.** Always verify worktree before touching files — see WORKTREE GUARDRAIL. Working in main is a hard failure that contaminates the user's repo.

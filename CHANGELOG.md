@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Add nil guard for formatter in proxyCallFormat
+
+## [2.1.7] - 2026-06-08
+
 ### Added
 
 - Add code style matching and outcome reporting rules to all three SYSTEM.md copies
@@ -2703,7 +2709,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive tests for generator and storage
 
 
-[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.1.6...HEAD
+[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.1.7...HEAD
+[2.1.7]: https://github.com/carsteneu/yesmem/compare/v2.1.6...v2.1.7
 [2.1.6]: https://github.com/carsteneu/yesmem/compare/v2.1.5...v2.1.6
 [2.1.5]: https://github.com/carsteneu/yesmem/compare/v2.1.4...v2.1.5
 [2.1.4]: https://github.com/carsteneu/yesmem/compare/v2.1.3...v2.1.4

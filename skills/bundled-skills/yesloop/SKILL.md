@@ -171,6 +171,11 @@ update_agent_status(phase="Phase 2/6 PLAN")
 ### Phase 2: PLAN
 **Status:** COMPLETE
 **Plan stored via set_plan:** yes
+**Decisions resolved:** all — files, schema, API, blast radius
+  - File selection: <which files, why not others>
+  - Schema decisions: <data structures, interfaces, types>
+  - API surface: <public interface, signature choices>
+  - Blast radius: <what else could break, dependencies affected>
 **Milestones:** N total (see criteria below)
   - Milestone 1: <name> (<step count> steps)
   - Milestone 2: <name> (<step count> steps)
@@ -311,6 +316,11 @@ update_agent_status(phase="Phase 6/6 FINISH")
 ### Phase 2: PLAN
 **Status:** COMPLETE
 **Plan stored via set_plan:** yes
+**Decisions resolved:** all
+  - File selection: config.go, handler_state.go, cmd_config.go, main.go
+  - Schema decisions: yaml config struct with Get/Set methods
+  - API surface: Save/GetValue/SetValue on Config type
+  - Blast radius: proxy_state override precedence, concurrent write
 **Milestones:** 2 total
   - Milestone 1: config.go Save/GetValue + tests (4 steps)
   - Milestone 2: handler rewiring + CLI (3 steps)

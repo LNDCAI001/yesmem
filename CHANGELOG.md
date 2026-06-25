@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add opencode.json helper section for agents
 - Install opencode /yesloop command during setup
 - Add done-verify state machine (Layer 3)
 - Add resolveSpawnModel helper for bare model name resolution
@@ -23,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Sync Decisions-resolved field to bundled-commands template
+- Add Decisions-resolved field to Phase 2 PLAN
 - Derive primary/smallModel from chosen provider, not hardcoded deepseek
 - Tighten finishing-a-development-branch triggers
 - Opencode verify needs system prompt to produce text

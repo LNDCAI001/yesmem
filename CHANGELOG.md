@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Split agent status "frozen" into paused/stopped
+
+### Fixed
+
+- Wire loop detection into OpenAI-parity pipeline
+- Busy_timeout 5000 → 30000 for multi-writer contention
+- Code-describe max_tokens 1024 → 8192 for DeepSeek V4 reasoning
+
+### Documentation
+
+- Yesloop Phase 6 send_to marker convention + plans + reddit post
+
+## [2.2.4] - 2026-07-01
+
 ### Added
 
 - Scratchpad_append MCP tool + skill discipline rules
@@ -3104,7 +3120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive tests for generator and storage
 
 
-[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.2.3...HEAD
+[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.2.4...HEAD
+[2.2.4]: https://github.com/carsteneu/yesmem/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/carsteneu/yesmem/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/carsteneu/yesmem/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/carsteneu/yesmem/compare/v2.2.0...v2.2.1

@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -389,9 +391,9 @@ func TestHandleRelayAgent_AgentNotRunning(t *testing.T) {
 
 	resp := h.handleRelayAgent(map[string]any{"to": "agent-1", "content": "hello"})
 	if resp.Error == "" {
-		t.Fatal("expected error for non-running agent")
+		t.Fatal("expected error for stopped agent")
 	}
-	if !strings.Contains(resp.Error, "not running") {
+	if !strings.Contains(resp.Error, "stopped") {
 		t.Errorf("unexpected error text: %s", resp.Error)
 	}
 }
@@ -499,7 +501,7 @@ func TestHandleStopAgent_Success(t *testing.T) {
 }
 
 func TestHandleStopAgent_StoppableStatuses(t *testing.T) {
-	for _, status := range []string{"running", "frozen", "spawning"} {
+	for _, status := range []string{"running", "paused", "spawning"} {
 		t.Run(status, func(t *testing.T) {
 			h, s := mustHandler(t)
 
@@ -608,7 +610,7 @@ func TestHandleStopAllAgents_MixedStatuses(t *testing.T) {
 	h, s := mustHandler(t)
 
 	s.AgentCreate(storage.Agent{ID: "a1", Project: "proj", Section: "s1", Status: "running", Backend: "claude"})
-	s.AgentCreate(storage.Agent{ID: "a2", Project: "proj", Section: "s2", Status: "frozen", Backend: "claude"})
+	s.AgentCreate(storage.Agent{ID: "a2", Project: "proj", Section: "s2", Status: "paused", Backend: "claude"})
 	s.AgentCreate(storage.Agent{ID: "a3", Project: "proj", Section: "s3", Status: "spawning", Backend: "claude"})
 	s.AgentCreate(storage.Agent{ID: "a4", Project: "proj", Section: "s4", Status: "stopped", Backend: "claude"})
 	s.AgentCreate(storage.Agent{ID: "a5", Project: "proj", Section: "s5", Status: "error", Backend: "claude"})
@@ -621,7 +623,7 @@ func TestHandleStopAllAgents_MixedStatuses(t *testing.T) {
 	m := resultMap(t, resp)
 	stopped, _ := m["stopped"].(float64)
 	if stopped != 3 {
-		t.Errorf("stopped = %v, want 3 (running+frozen+spawning)", stopped)
+		t.Errorf("stopped = %v, want 3 (running+paused+spawning)", stopped)
 	}
 }
 
@@ -728,13 +730,13 @@ func TestHandleResumeAgent_Success(t *testing.T) {
 	}
 }
 
-func TestHandleResumeAgent_FrozenIsResumable(t *testing.T) {
+func TestHandleResumeAgent_PausedIsResumable(t *testing.T) {
 	h, s := mustHandler(t)
 	h.dataDir = t.TempDir()
 
 	s.AgentCreate(storage.Agent{
 		ID: "agent-1", Project: "proj", Section: "task",
-		SessionID: "sess-1", Status: "frozen", Backend: "claude",
+		SessionID: "sess-1", Status: "paused", Backend: "claude",
 	})
 
 	resp := h.handleResumeAgent(map[string]any{"to": "agent-1"})
@@ -1445,5 +1447,146 @@ func TestFindCodexSessionID_SkipsNonMatchingSessionMeta(t *testing.T) {
 	}
 	if sid != "right-2" {
 		t.Errorf("session ID = %q, want right-2 (should skip non-matching session_meta and continue scanning)", sid)
+	}
+}
+
+// --- get_agent recommended_action field ---
+
+func TestGetAgent_RecommendedAction_Paused(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{
+		ID: "rec-paused", Project: "p", Section: "s",
+		Status: "paused", Backend: "claude",
+	})
+	resp := h.handleGetAgent(map[string]any{"to": "rec-paused"})
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	m := resultMap(t, resp)
+	if m["recommended_action"] != "relay_agent" {
+		t.Errorf("paused agent recommended_action=%v want relay_agent", m["recommended_action"])
+	}
+}
+
+func TestGetAgent_RecommendedAction_Stopped(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{
+		ID: "rec-stopped", Project: "p", Section: "s",
+		Status: "stopped", Backend: "claude",
+	})
+	resp := h.handleGetAgent(map[string]any{"to": "rec-stopped"})
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	m := resultMap(t, resp)
+	if m["recommended_action"] != "manual restart" {
+		t.Errorf("stopped agent recommended_action=%v want 'manual restart'", m["recommended_action"])
+	}
+}
+
+func TestGetAgent_RecommendedAction_Running(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{
+		ID: "rec-running", Project: "p", Section: "s",
+		Status: "running", Backend: "claude",
+	})
+	resp := h.handleGetAgent(map[string]any{"to": "rec-running"})
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	m := resultMap(t, resp)
+	if m["recommended_action"] != "monitor" {
+		t.Errorf("running agent recommended_action=%v want monitor", m["recommended_action"])
+	}
+}
+
+// --- relay_agent: paused allowed, stopped blocked ---
+
+func TestRelayAgent_PausedAllowed(t *testing.T) {
+	h, s := mustHandler(t)
+	// Paused agent must have a SockPath so the dial-path is reachable. We
+	// pre-create a unix socket pair so the inject dial succeeds.
+	sockDir := t.TempDir()
+	sockPath := filepath.Join(sockDir, "agent.sock")
+	injectPath := sockPath + ".inject"
+	ln, err := net.Listen("unix", injectPath)
+	if err != nil {
+		t.Fatalf("listen inject: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		// Drain the listener so the dial in handleRelayAgent succeeds.
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			io.Copy(io.Discard, c)
+			c.Close()
+		}
+	}()
+
+	s.AgentCreate(storage.Agent{
+		ID: "relay-paused", Project: "p", Section: "s",
+		Status: "paused", Backend: "claude", SockPath: sockPath,
+	})
+	resp := h.handleRelayAgent(map[string]any{
+		"to":      "relay-paused",
+		"content": "hello paused agent",
+	})
+	if resp.Error != "" {
+		t.Fatalf("relay to paused agent should succeed, got error: %s", resp.Error)
+	}
+}
+
+func TestRelayAgent_StoppedBlocked(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{
+		ID: "relay-stopped", Project: "p", Section: "s",
+		Status: "stopped", Backend: "claude", SockPath: "/tmp/whatever.sock",
+	})
+	resp := h.handleRelayAgent(map[string]any{
+		"to":      "relay-stopped",
+		"content": "hello stopped agent",
+	})
+	if resp.Error == "" {
+		t.Fatal("relay to stopped agent should be blocked, got no error")
+	}
+	if !strings.Contains(resp.Error, "not running") && !strings.Contains(resp.Error, "stopped") {
+		t.Errorf("relay to stopped agent error should mention 'stopped' or 'not running', got: %s", resp.Error)
+	}
+}
+
+func TestRelayAgent_RunningAllowed(t *testing.T) {
+	h, s := mustHandler(t)
+	sockDir := t.TempDir()
+	sockPath := filepath.Join(sockDir, "agent.sock")
+	injectPath := sockPath + ".inject"
+	ln, err := net.Listen("unix", injectPath)
+	if err != nil {
+		t.Fatalf("listen inject: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			io.Copy(io.Discard, c)
+			c.Close()
+		}
+	}()
+
+	s.AgentCreate(storage.Agent{
+		ID: "relay-running", Project: "p", Section: "s",
+		Status: "running", Backend: "claude", SockPath: sockPath,
+	})
+	resp := h.handleRelayAgent(map[string]any{
+		"to":      "relay-running",
+		"content": "hello running agent",
+	})
+	if resp.Error != "" {
+		t.Fatalf("relay to running agent should succeed, got error: %s", resp.Error)
 	}
 }

@@ -163,7 +163,7 @@ func (s *Store) AgentGetActiveBySection(project, section string) (*Agent, error)
 	return s.scanAgent(s.readerDB().QueryRow(
 		`SELECT id, project, section, session_id, pid, sock_path, status, caller_session, error, heartbeat_at, progress, relay_count, depth, token_budget, retry_count, COALESCE(backend, 'claude') as backend, COALESCE(turns_used, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), COALESCE(last_activity_at, ''), COALESCE(phase, 'idle'), created_at, stopped_at, restart_strategy, restart_count, max_restarts, liveness_ping_at, last_restart_at, COALESCE(proxy_thread_id, ''), COALESCE(codex_session_id, ''), COALESCE(opencode_session_id, '')
 		FROM agents
-		WHERE project = ? AND section = ? AND status IN ('running', 'pending', 'spawning', 'frozen')
+		WHERE project = ? AND section = ? AND status IN ('running', 'pending', 'spawning', 'paused', 'frozen')
 		ORDER BY created_at DESC LIMIT 1`, project, section))
 }
 
@@ -387,11 +387,11 @@ func (s *Store) AgentCascadeStop(parentSessionID string) (int, error) {
 				continue
 			}
 			visited[a.SessionID] = true
-			if a.Status == "running" || a.Status == "frozen" || a.Status == "spawning" || a.Status == "pending" {
-				if err := s.AgentUpdate(a.ID, map[string]any{"status": "stopped"}); err == nil {
-					stopped++
-				}
+		if a.Status == "running" || a.Status == "paused" || a.Status == "spawning" || a.Status == "pending" {
+			if err := s.AgentUpdate(a.ID, map[string]any{"status": "stopped"}); err == nil {
+				stopped++
 			}
+		}
 			queue = append(queue, a.SessionID)
 		}
 	}
@@ -429,6 +429,7 @@ func (s *Store) scanAgent(row *sql.Row) (*Agent, error) {
 	a.ProxyThreadID = proxyThreadID.String
 	a.CodexSessionID = codexSessionID.String
 	a.OpencodeSessionID = opencodeSessionID.String
+	a.Status = normalizeAgentStatus(a.Status)
 	return a, nil
 }
 
@@ -463,6 +464,19 @@ func (s *Store) scanAgentRow(rows *sql.Rows) (Agent, error) {
 	a.ProxyThreadID = proxyThreadID.String
 	a.CodexSessionID = codexSessionID.String
 	a.OpencodeSessionID = opencodeSessionID.String
+	a.Status = normalizeAgentStatus(a.Status)
 	return a, nil
+}
+
+// normalizeAgentStatus translates the legacy "frozen" status to "paused" on read.
+// "frozen" was split into "paused" (process alive, waiting) and "stopped"
+// (process dead/permanently failed). Old DB rows that still carry "frozen" are
+// conservatively treated as "paused" — better to allow relay on an uncertain
+// row than to wrongly declare an agent dead.
+func normalizeAgentStatus(s string) string {
+	if s == "frozen" {
+		return "paused"
+	}
+	return s
 }
 

@@ -120,7 +120,7 @@ func TestDoneVerify_BewiesenMarker_PlusDoneSendTo_TransitionsToVerified(t *testi
 }
 
 // TestDoneVerify_3Refires_EscalatesToOrchestrator: after 3 refires without progress,
-// agent is frozen + orchestrator notified.
+// agent is paused + orchestrator notified.
 func TestDoneVerify_3Refires_EscalatesToOrchestrator(t *testing.T) {
 	resetDoneVerifyState()
 	h, s := mustHandler(t)
@@ -162,8 +162,8 @@ func TestDoneVerify_3Refires_EscalatesToOrchestrator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AgentGet: %v", err)
 	}
-	if agent.Status != "frozen" {
-		t.Errorf("after escalation, agent status should be frozen, got %s", agent.Status)
+	if agent.Status != "paused" {
+		t.Errorf("after escalation, agent status should be paused, got %s", agent.Status)
 	}
 	if !strings.Contains(agent.Progress, "yesloop-done-verify") {
 		t.Errorf("progress should mention yesloop-done-verify, got %s", agent.Progress)

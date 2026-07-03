@@ -505,14 +505,14 @@ update_agent_status(phase="Phase 4/6 MONITOR")
 
 **What counts as stalled (recovery needed):**
 - `stream_active == false` AND no activity (last_activity_at, turns, commits) for 20+ minutes AND `subagent_streams == 0`
-- `frozen: max_runtime exceeded` with PID alive → false positive , extend runtime or relay to continue
+- `stopped: max_runtime exceeded` with PID alive → rare (stopAgent only fires on dead PID); if seen with alive PID, treat as false positive, extend runtime or relay to continue
 - PID dead → crashed, respawn
 - `BLOCKED — <reason>` in scratchpad → orchestrator resolves
 
 **Recovery actions:**
-  - `frozen: max_runtime exceeded` but PID alive → false positive , extend `max_runtime` via respawn, or relay to continue
+  - `stopped: max_runtime exceeded` but PID alive → rare false positive, extend `max_runtime` via respawn, or relay to continue
   - Crashed (PID dead) → respawn with identical task, note "respawn attempt N"
-  - Stalled (no activity >20min, no frozen) → `relay_agent` kick: "Status check — current phase? Any blockers?" Wait 10 min for response. If still flat, respawn.
+  - Stalled (no activity >20min, not paused/stopped) → `relay_agent` kick: "Status check — current phase? Any blockers?" Wait 10 min for response. If still flat, respawn.
   - `BLOCKED — <reason>` in scratchpad → orchestrator resolves or aborts that cluster
 - Cap: 3 respawns per agent. After that, abort cluster, document gap.
 
@@ -1029,7 +1029,7 @@ Frontmatter is the single source of truth for status, navigation, and searchabil
 | Bereichs-Agent crashed (PID dead) | Orchestrator respawns with identical task, scratchpad section preserved. Max 3 respawns. |
 | Socket collision on spawn | `rm -f ~/.claude/yesmem/agent-<id>.sock` before respawn  |
 | Stalled agent (`stream_active==false` AND no activity >20min AND `subagent_streams==0`) | `relay_agent` kick: "Status check — current phase? Blockers?" Wait 10 min. If still flat, respawn. |
-| `frozen: max_runtime exceeded` but PID alive | False positive . Extend `max_runtime` via respawn, or relay to continue. |
+| `stopped: max_runtime exceeded` but PID alive | Rare false positive (stopAgent only fires on dead PID). Extend `max_runtime` via respawn, or relay to continue. |
 | webfetch 403 / timeout | Subagent documents, tries Wayback/Google cache. If all fail: file marked `partial`, proceed. |
 | Master plan ambiguous | Orchestrator resolves via inline decomposition. If unresolvable: `send_to caller_session: "AMBIGUITY: <description>"` and wait. |
 | All Bereichs-Agents fail | Orchestrator documents, aborts, escalates: `send_to caller_session: "ABORT: all agents failed. <details>"` |

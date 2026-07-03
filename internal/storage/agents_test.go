@@ -500,3 +500,40 @@ func TestAgentUpdateProxyThreadID(t *testing.T) {
 		t.Errorf("ProxyThreadID = %q, want new-thread-hash", a.ProxyThreadID)
 	}
 }
+
+// --- Legacy "frozen" status normalization on read ---
+
+func TestAgentGet_NormalizesLegacyFrozenStatus(t *testing.T) {
+	s := newTestStore(t)
+	// Insert raw "frozen" status (legacy DB row from before the paused/stopped split)
+	if err := s.AgentCreate(Agent{
+		ID: "legacy-frozen", Project: "p", Section: "s", Status: "frozen",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	a, err := s.AgentGet("legacy-frozen")
+	if err != nil {
+		t.Fatalf("AgentGet: %v", err)
+	}
+	if a.Status != "paused" {
+		t.Errorf("legacy frozen status should normalize to paused, got %q", a.Status)
+	}
+}
+
+func TestAgentList_NormalizesLegacyFrozenStatus(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AgentCreate(Agent{
+		ID: "list-frozen", Project: "p", Section: "s", Status: "frozen",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	agents, err := s.AgentList("p")
+	if err != nil {
+		t.Fatalf("AgentList: %v", err)
+	}
+	for _, a := range agents {
+		if a.ID == "list-frozen" && a.Status != "paused" {
+			t.Errorf("legacy frozen in list should normalize to paused, got %q", a.Status)
+		}
+	}
+}

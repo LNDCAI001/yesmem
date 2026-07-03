@@ -572,8 +572,8 @@ func (h *Handler) handleRelayAgent(params map[string]any) Response {
 		return errorResponse(err.Error())
 	}
 
-	if agent.Status != "running" {
-		return errorResponse(fmt.Sprintf("agent %s is %s, not running", agent.ID, agent.Status))
+	if agent.Status == "stopped" {
+		return errorResponse(fmt.Sprintf("agent %s is stopped, not relayable", agent.ID))
 	}
 	if agent.SockPath == "" {
 		return errorResponse(fmt.Sprintf("agent %s has no socket path (not registered yet?)", agent.ID))
@@ -635,7 +635,7 @@ func (h *Handler) handleStopAgent(params map[string]any) Response {
 		return errorResponse(err.Error())
 	}
 
-	if agent.Status != "running" && agent.Status != "frozen" && agent.Status != "spawning" {
+	if agent.Status != "running" && agent.Status != "paused" && agent.Status != "spawning" {
 		return errorResponse(fmt.Sprintf("agent %s is %s, not stoppable", agent.ID, agent.Status))
 	}
 
@@ -712,7 +712,7 @@ func (h *Handler) handleStopAllAgents(params map[string]any) Response {
 
 	stopped := 0
 	for _, a := range agents {
-		if a.Status != "running" && a.Status != "frozen" && a.Status != "spawning" {
+		if a.Status != "running" && a.Status != "paused" && a.Status != "spawning" {
 			continue
 		}
 		// Try graceful exit
@@ -751,7 +751,7 @@ func (h *Handler) handleStopAllAgents(params map[string]any) Response {
 	})
 }
 
-// handleResumeAgent restarts a stopped/frozen agent using its existing session.
+// handleResumeAgent restarts a stopped/paused agent using its existing session.
 func (h *Handler) handleResumeAgent(params map[string]any) Response {
 	to, _ := params["to"].(string)
 	project, _ := params["project"].(string)
@@ -765,7 +765,7 @@ func (h *Handler) handleResumeAgent(params map[string]any) Response {
 		return errorResponse(err.Error())
 	}
 
-	if agent.Status != "stopped" && agent.Status != "frozen" && agent.Status != "finished" {
+	if agent.Status != "stopped" && agent.Status != "paused" && agent.Status != "finished" {
 		return errorResponse(fmt.Sprintf("agent %s is %s, not resumable", agent.ID, agent.Status))
 	}
 	if agent.Backend == "" {
@@ -944,34 +944,55 @@ func (h *Handler) handleGetAgent(params map[string]any) Response {
 // agentToMap converts an Agent struct to a map[string]any for enrichment.
 func agentToMap(a *storage.Agent) map[string]any {
 	return map[string]any{
-		"id":               a.ID,
-		"project":          a.Project,
-		"section":          a.Section,
-		"session_id":       a.SessionID,
-		"pid":              a.PID,
-		"sock_path":        a.SockPath,
-		"status":           a.Status,
-		"caller_session":   a.CallerSession,
-		"error":            a.Error,
-		"heartbeat_at":     a.HeartbeatAt,
-		"progress":         a.Progress,
-		"relay_count":      a.RelayCount,
-		"depth":            a.Depth,
-		"token_budget":     a.TokenBudget,
-		"retry_count":      a.RetryCount,
-		"backend":          a.Backend,
-		"turns_used":       a.TurnsUsed,
-		"input_tokens":     a.InputTokens,
-		"output_tokens":    a.OutputTokens,
-		"last_activity_at": a.LastActivityAt,
-		"phase":            a.Phase,
-		"created_at":       a.CreatedAt,
-		"stopped_at":       a.StoppedAt,
-		"restart_strategy": a.RestartStrategy,
-		"restart_count":    a.RestartCount,
-		"max_restarts":     a.MaxRestarts,
-		"liveness_ping_at": a.LivenessPingAt,
-		"last_restart_at":  a.LastRestartAt,
+		"id":                 a.ID,
+		"project":            a.Project,
+		"section":            a.Section,
+		"session_id":         a.SessionID,
+		"pid":                a.PID,
+		"sock_path":          a.SockPath,
+		"status":             a.Status,
+		"recommended_action": recommendedActionForStatus(a.Status),
+		"caller_session":     a.CallerSession,
+		"error":              a.Error,
+		"heartbeat_at":       a.HeartbeatAt,
+		"progress":           a.Progress,
+		"relay_count":        a.RelayCount,
+		"depth":              a.Depth,
+		"token_budget":       a.TokenBudget,
+		"retry_count":        a.RetryCount,
+		"backend":            a.Backend,
+		"turns_used":         a.TurnsUsed,
+		"input_tokens":       a.InputTokens,
+		"output_tokens":      a.OutputTokens,
+		"last_activity_at":   a.LastActivityAt,
+		"phase":              a.Phase,
+		"created_at":         a.CreatedAt,
+		"stopped_at":         a.StoppedAt,
+		"restart_strategy":   a.RestartStrategy,
+		"restart_count":      a.RestartCount,
+		"max_restarts":       a.MaxRestarts,
+		"liveness_ping_at":   a.LivenessPingAt,
+		"last_restart_at":    a.LastRestartAt,
+	}
+}
+
+// recommendedActionForStatus maps an agent status to the single MCP action an
+// orchestrator should take next. Empty string for statuses with no clear
+// recommendation (orchestrator decides).
+func recommendedActionForStatus(status string) string {
+	switch status {
+	case "running":
+		return "monitor"
+	case "paused":
+		return "relay_agent"
+	case "stopped", "failed", "error":
+		return "manual restart"
+	case "spawning", "pending":
+		return "wait"
+	case "finished":
+		return "archive"
+	default:
+		return ""
 	}
 }
 

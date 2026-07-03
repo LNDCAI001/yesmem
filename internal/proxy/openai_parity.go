@@ -59,6 +59,12 @@ func (s *Server) ensureOpenAIRuntimeState() {
 	}
 	s.mu.Unlock()
 
+	s.loopMu.Lock()
+	if s.loopStates == nil {
+		s.loopStates = make(map[string]*LoopState)
+	}
+	s.loopMu.Unlock()
+
 	s.thinkMu.Lock()
 	if s.thinkCounters == nil {
 		s.thinkCounters = make(map[string]int)
@@ -232,6 +238,26 @@ func (s *Server) runOpenAIParityPipeline(req map[string]any, ctx *openAIRequestC
 		go s.queryDaemon("invalidate_on_commit", map[string]any{
 			"hash": ci.Hash, "project": ctx.Project, "workdir": workdir,
 		})
+	}
+
+	// Loop detection: check for repeating tool-call patterns and inject warning.
+	// Mirrors the handleMessages wiring at proxy.go:1176-1190 so the OpenAI-parity
+	// path (opencode) gets the same loop warnings as the Anthropic path.
+	if ctx.ThreadID != "" && !ctx.Retry {
+		s.loopMu.Lock()
+		loopState := s.loopStates[ctx.ThreadID]
+		if loopState == nil {
+			loopState = &LoopState{}
+			s.loopStates[ctx.ThreadID] = loopState
+		}
+		s.loopMu.Unlock()
+
+		if warning, level := CheckLoopAndFormat(messages, loopState); warning != "" {
+			AppendSystemBlock(req, "yesmem-loop-warning", warning)
+			if s.logger != nil {
+				s.logger.Printf("%s[req %d %s tid=%s] LOOP: level %d warning injected%s", colorOrange, ctx.ReqIdx, ctx.Project, ctx.ThreadID, level, colorReset)
+			}
+		}
 	}
 
 	if ctx.Subagent {

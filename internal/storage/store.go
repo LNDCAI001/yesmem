@@ -190,7 +190,7 @@ func openSQLite(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+	if _, err := db.Exec("PRAGMA busy_timeout=30000"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
@@ -248,7 +248,7 @@ func openSQLiteReadOnly(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("set query_only: %w", err)
 	}
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+	if _, err := db.Exec("PRAGMA busy_timeout=30000"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}

@@ -63,7 +63,7 @@ func GeneratePackageDescriptions(client LLMClient, result *codescan.ScanResult, 
 
 		prompt := buildPackagePrompt(pkg, counts)
 
-		resp, err := client.CompleteJSON(codeDescribeSystemPrompt, prompt, packageDescriptionSchema, WithMaxTokens(1024))
+		resp, err := client.CompleteJSON(codeDescribeSystemPrompt, prompt, packageDescriptionSchema, WithMaxTokens(8192))
 		if err != nil {
 			log.Printf("[code-describe] LLM error for %s: %v", pkg.Name, err)
 			continue

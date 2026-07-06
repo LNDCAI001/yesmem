@@ -557,6 +557,8 @@ func countCompactedMsgs(blocks []CompactedBlock) int {
 
 // prependMeta prepends a metadata string to a message's first text content.
 // Handles both string content and content-block arrays. Skips if already annotated.
+// If the message has content-block array but no text block (e.g. tool_result-only),
+// a new text block is inserted at position 0 to carry the metadata.
 func prependMeta(msg map[string]any, meta string) {
 	prefix := meta + "\n"
 
@@ -579,6 +581,9 @@ func prependMeta(msg map[string]any, meta string) {
 			b["text"] = prefix + text
 			return
 		}
+		// No text block found — insert one at position 0 so metadata is visible.
+		textBlock := map[string]any{"type": "text", "text": prefix}
+		msg["content"] = append([]any{textBlock}, content...)
 	}
 }
 

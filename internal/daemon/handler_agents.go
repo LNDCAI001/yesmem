@@ -224,33 +224,41 @@ func findCodexSessionID(workDir string) (string, error) {
 }
 
 // pollCodexSessionID waits for a codex session file to appear for the given
-// workDir and returns its session ID. Returns "" on timeout.
+// workDir and returns its session ID. Returns "" on timeout and logs the
+// last lookup error so silent capture failures stay visible.
 func pollCodexSessionID(workDir string, timeout time.Duration) string {
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		sid, err := findCodexSessionID(workDir)
 		if err == nil && sid != "" {
 			return sid
 		}
+		lastErr = err
 		time.Sleep(500 * time.Millisecond)
 	}
+	log.Printf("[agent_capture] codex session capture timed out after %s for workDir %s (last error: %v)", timeout, workDir, lastErr)
 	return ""
 }
 
 // pollOpencodeSessionID queries the opencode database via sqlite3 CLI for
 // the most recent session matching workDir and returns its session ID.
-// Returns "" on timeout or error.
+// Returns "" on timeout or error; every failure path logs its reason so a
+// missing capture (→ whoami is_agent=false) can be diagnosed from the logs.
 func pollOpencodeSessionID(workDir string, timeout time.Duration) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
+		log.Printf("[agent_capture] opencode session capture: cannot resolve home dir: %v", err)
 		return ""
 	}
 	dbPath := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
 	if _, err := os.Stat(dbPath); err != nil {
+		log.Printf("[agent_capture] opencode session capture: opencode.db not found at %s: %v", dbPath, err)
 		return ""
 	}
 
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		// sqlite3 CLI does not support ? placeholders; escape the workDir manually.
 		escaped := strings.ReplaceAll(workDir, "'", "''")
@@ -262,8 +270,16 @@ func pollOpencodeSessionID(workDir string, timeout time.Duration) string {
 				return sid
 			}
 		}
+		lastErr = err
 		time.Sleep(500 * time.Millisecond)
 	}
+
+	// Timeout: log the workDir plus the most recent session directories so a
+	// workDir mismatch (e.g. worktree vs main checkout) is visible at a glance.
+	recent, _ := exec.Command("sqlite3", dbPath,
+		"SELECT DISTINCT directory FROM session ORDER BY time_created DESC LIMIT 3").Output()
+	log.Printf("[agent_capture] opencode session capture timed out after %s: no session for workDir %s (last error: %v; recent session dirs: %s)",
+		timeout, workDir, lastErr, strings.ReplaceAll(strings.TrimSpace(string(recent)), "\n", ", "))
 	return ""
 }
 
@@ -288,6 +304,53 @@ func loadCodexAuthEnv() (string, error) {
 		return "", fmt.Errorf("no OPENAI_API_KEY in auth.json")
 	}
 	return "OPENAI_API_KEY=" + auth.OPENAI_API_KEY, nil
+}
+
+// buildAgentExtraEnv returns the extra environment variables to inject into
+// the spawned agent's process. For opencode/codex backends we set
+// YESMEM_SOURCE_AGENT + YESMEM_SESSION_ID so the yesmem-mcp child (spawned by
+// the backend) can identify itself to the daemon without relying on the
+// global active_session_opencode proxy-state, which is Last-Writer-Wins
+// across parallel agents. Codex additionally gets CODEX_THREAD_ID because
+// internal/mcp/server.go resolveClientSessionID reads that variable (not
+// YESMEM_SESSION_ID) for the codex branch.
+//
+// NOTE: despite the name this helper is not pure — for the codex backend it
+// reads ~/.codex/auth.json via loadCodexAuthEnv to inject OPENAI_API_KEY.
+// The pre-refactor inline code did the same; preserved here.
+func buildAgentExtraEnv(backend, sessionID string) []string {
+	var env []string
+	if backend == "codex" {
+		if k, err := loadCodexAuthEnv(); err == nil && k != "" {
+			env = append(env, k)
+		}
+	}
+	// Identity vars only make sense when we have a sessionID to advertise.
+	// Without one, resolveClientSessionID returns ("", sourceAgent) and the
+	// MCP wrapper skips the _session_id param — defeat the purpose.
+	if sessionID == "" {
+		return env
+	}
+	switch backend {
+	case "opencode":
+		env = append(env,
+			"YESMEM_SOURCE_AGENT=opencode",
+			"YESMEM_SESSION_ID="+sessionID,
+		)
+	case "codex":
+		env = append(env,
+			"YESMEM_SOURCE_AGENT=codex",
+			"YESMEM_SESSION_ID="+sessionID,
+			// Mirror to CODEX_THREAD_ID so resolveClientSessionID's codex
+			// branch (which reads CODEX_THREAD_ID, not YESMEM_SESSION_ID)
+			// picks it up. Verified codex CLI does not consume
+			// CODEX_THREAD_ID for its own thread selection (it polls the
+			// filesystem ~2s after spawn in pollCodexSessionID); only
+			// yesmem-mcp children read it.
+			"CODEX_THREAD_ID="+sessionID,
+		)
+	}
+	return env
 }
 
 // spawnAgentProcess creates a PTY bridge, opens a terminal, and waits for the agent to finish.
@@ -363,13 +426,11 @@ func (h *Handler) spawnAgentProcess(id, sessionID, project, section, prompt, soc
 		}
 	}
 
-	// Load codex auth for env injection (codex CLI needs OPENAI_API_KEY in environment)
-	var extraEnv []string
-	if backend == "codex" {
-		if key, err := loadCodexAuthEnv(); err == nil && key != "" {
-			extraEnv = append(extraEnv, key)
-		}
-	}
+	// Build extraEnv: codex OPENAI_API_KEY + identity vars for non-claude
+	// backends so the yesmem-mcp child can resolve its own session without
+	// the global active_session_opencode proxy-state (Last-Writer-Wins across
+	// parallel agents). See resolveClientSessionID in internal/mcp/server.go.
+	extraEnv := buildAgentExtraEnv(backend, sessionID)
 
 	bridge, err := orchestrator.NewAgentBridge(agentBin, agentArgs, sockPath, workDir, extraEnv...)
 	if err != nil {
@@ -447,6 +508,8 @@ func (h *Handler) spawnAgentProcess(id, sessionID, project, section, prompt, soc
 					h.store.AgentUpdate(id, map[string]any{
 						"codex_session_id": codexID,
 					})
+				} else {
+					log.Printf("[agent_capture] agent %s: codex_session_id stays empty — whoami will not resolve this agent by backend session", id)
 				}
 			}
 			// Capture opencode session ID for per-agent tracking.
@@ -457,6 +520,8 @@ func (h *Handler) spawnAgentProcess(id, sessionID, project, section, prompt, soc
 					h.store.AgentUpdate(id, map[string]any{
 						"opencode_session_id": ocID,
 					})
+				} else {
+					log.Printf("[agent_capture] agent %s: opencode_session_id stays empty — whoami will not resolve this agent by backend session", id)
 				}
 			}
 		}()
@@ -572,8 +637,8 @@ func (h *Handler) handleRelayAgent(params map[string]any) Response {
 		return errorResponse(err.Error())
 	}
 
-	if agent.Status != "running" {
-		return errorResponse(fmt.Sprintf("agent %s is %s, not running", agent.ID, agent.Status))
+	if agent.Status == "stopped" {
+		return errorResponse(fmt.Sprintf("agent %s is stopped, not relayable", agent.ID))
 	}
 	if agent.SockPath == "" {
 		return errorResponse(fmt.Sprintf("agent %s has no socket path (not registered yet?)", agent.ID))
@@ -635,7 +700,7 @@ func (h *Handler) handleStopAgent(params map[string]any) Response {
 		return errorResponse(err.Error())
 	}
 
-	if agent.Status != "running" && agent.Status != "frozen" && agent.Status != "spawning" {
+	if agent.Status != "running" && agent.Status != "paused" && agent.Status != "spawning" {
 		return errorResponse(fmt.Sprintf("agent %s is %s, not stoppable", agent.ID, agent.Status))
 	}
 
@@ -712,7 +777,7 @@ func (h *Handler) handleStopAllAgents(params map[string]any) Response {
 
 	stopped := 0
 	for _, a := range agents {
-		if a.Status != "running" && a.Status != "frozen" && a.Status != "spawning" {
+		if a.Status != "running" && a.Status != "paused" && a.Status != "spawning" {
 			continue
 		}
 		// Try graceful exit
@@ -751,7 +816,7 @@ func (h *Handler) handleStopAllAgents(params map[string]any) Response {
 	})
 }
 
-// handleResumeAgent restarts a stopped/frozen agent using its existing session.
+// handleResumeAgent restarts a stopped/paused agent using its existing session.
 func (h *Handler) handleResumeAgent(params map[string]any) Response {
 	to, _ := params["to"].(string)
 	project, _ := params["project"].(string)
@@ -765,7 +830,7 @@ func (h *Handler) handleResumeAgent(params map[string]any) Response {
 		return errorResponse(err.Error())
 	}
 
-	if agent.Status != "stopped" && agent.Status != "frozen" && agent.Status != "finished" {
+	if agent.Status != "stopped" && agent.Status != "paused" && agent.Status != "finished" {
 		return errorResponse(fmt.Sprintf("agent %s is %s, not resumable", agent.ID, agent.Status))
 	}
 	if agent.Backend == "" {
@@ -944,34 +1009,55 @@ func (h *Handler) handleGetAgent(params map[string]any) Response {
 // agentToMap converts an Agent struct to a map[string]any for enrichment.
 func agentToMap(a *storage.Agent) map[string]any {
 	return map[string]any{
-		"id":               a.ID,
-		"project":          a.Project,
-		"section":          a.Section,
-		"session_id":       a.SessionID,
-		"pid":              a.PID,
-		"sock_path":        a.SockPath,
-		"status":           a.Status,
-		"caller_session":   a.CallerSession,
-		"error":            a.Error,
-		"heartbeat_at":     a.HeartbeatAt,
-		"progress":         a.Progress,
-		"relay_count":      a.RelayCount,
-		"depth":            a.Depth,
-		"token_budget":     a.TokenBudget,
-		"retry_count":      a.RetryCount,
-		"backend":          a.Backend,
-		"turns_used":       a.TurnsUsed,
-		"input_tokens":     a.InputTokens,
-		"output_tokens":    a.OutputTokens,
-		"last_activity_at": a.LastActivityAt,
-		"phase":            a.Phase,
-		"created_at":       a.CreatedAt,
-		"stopped_at":       a.StoppedAt,
-		"restart_strategy": a.RestartStrategy,
-		"restart_count":    a.RestartCount,
-		"max_restarts":     a.MaxRestarts,
-		"liveness_ping_at": a.LivenessPingAt,
-		"last_restart_at":  a.LastRestartAt,
+		"id":                 a.ID,
+		"project":            a.Project,
+		"section":            a.Section,
+		"session_id":         a.SessionID,
+		"pid":                a.PID,
+		"sock_path":          a.SockPath,
+		"status":             a.Status,
+		"recommended_action": recommendedActionForStatus(a.Status),
+		"caller_session":     a.CallerSession,
+		"error":              a.Error,
+		"heartbeat_at":       a.HeartbeatAt,
+		"progress":           a.Progress,
+		"relay_count":        a.RelayCount,
+		"depth":              a.Depth,
+		"token_budget":       a.TokenBudget,
+		"retry_count":        a.RetryCount,
+		"backend":            a.Backend,
+		"turns_used":         a.TurnsUsed,
+		"input_tokens":       a.InputTokens,
+		"output_tokens":      a.OutputTokens,
+		"last_activity_at":   a.LastActivityAt,
+		"phase":              a.Phase,
+		"created_at":         a.CreatedAt,
+		"stopped_at":         a.StoppedAt,
+		"restart_strategy":   a.RestartStrategy,
+		"restart_count":      a.RestartCount,
+		"max_restarts":       a.MaxRestarts,
+		"liveness_ping_at":   a.LivenessPingAt,
+		"last_restart_at":    a.LastRestartAt,
+	}
+}
+
+// recommendedActionForStatus maps an agent status to the single MCP action an
+// orchestrator should take next. Empty string for statuses with no clear
+// recommendation (orchestrator decides).
+func recommendedActionForStatus(status string) string {
+	switch status {
+	case "running":
+		return "monitor"
+	case "paused":
+		return "relay_agent"
+	case "stopped", "failed", "error":
+		return "manual restart"
+	case "spawning", "pending":
+		return "wait"
+	case "finished":
+		return "archive"
+	default:
+		return ""
 	}
 }
 

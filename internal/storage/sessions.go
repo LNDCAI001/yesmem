@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -141,25 +142,30 @@ func (s *Store) ResolveProjectShort(projectDir string) string {
 	return filepath.Base(projectDir)
 }
 
-// ResolveProjectStrict resolves a project identifier with hard-error semantics on
-// ambiguity. Absolute paths are returned cleaned. Legacy short names are matched
-// against the sessions table: a unique hit returns the full path, more than one
-// distinct full path returns an error listing the candidates so the caller can
-// disambiguate. Callers should surface the error verbatim to the user.
-func (s *Store) ResolveProjectShortStrict(name string) (string, error) {
+// ResolveProjectShortStrict resolves a project identifier to a single project path.
+// Absolute paths are returned cleaned. Short names are matched by basename against
+// sessions.project (which stores full paths since v0.65). A unique hit returns the
+// full path. Multiple candidates are disambiguated via cwd: the candidate that
+// equals cwd or is a path-ancestor of cwd wins. If cwd doesn't match any candidate,
+// the first candidate (ordered by path) is returned with ambiguous=true so callers
+// can avoid caching the cwd-dependent resolution. Zero candidates returns the short
+// name verbatim with a warning log and ambiguous=false (no resolution happened).
+func (s *Store) ResolveProjectShortStrict(name string, cwd string) (resolved string, ambiguous bool, err error) {
 	if name == "" {
-		return "", nil
+		return "", false, nil
 	}
 	if name[0] == '/' {
-		return filepath.Clean(name), nil
+		return filepath.Clean(name), false, nil
 	}
 
+	// Basename match against sessions.project (full paths since v0.65).
+	// Using LIKE '%/' || ? ensures we match only the last path segment.
 	rows, err := s.readerDB().Query(
-		`SELECT DISTINCT project FROM sessions WHERE project_short = ? AND project LIKE '/%' ORDER BY project`,
+		`SELECT DISTINCT project FROM sessions WHERE project LIKE '/%' AND project LIKE '%/' || ? ORDER BY project`,
 		name,
 	)
 	if err != nil {
-		return "", fmt.Errorf("resolve project %q: %w", name, err)
+		return "", false, fmt.Errorf("resolve project %q: %w", name, err)
 	}
 	defer rows.Close()
 
@@ -171,30 +177,52 @@ func (s *Store) ResolveProjectShortStrict(name string) (string, error) {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("resolve project %q: %w", name, err)
+		return "", false, fmt.Errorf("resolve project %q: %w", name, err)
 	}
 
 	switch len(candidates) {
 	case 0:
-		return name, nil
+		log.Printf("WARNING: ResolveProjectShortStrict: no project found for short name %q", name)
+		return name, false, nil
 	case 1:
-		return candidates[0], nil
+		return candidates[0], false, nil
 	default:
-		return "", &AmbiguousProjectError{Short: name, Candidates: candidates}
+		// Try cwd tiebreaker first — exact match or longest path-ancestor wins.
+		if cwd != "" {
+			if match := resolveByCWD(candidates, cwd); match != "" {
+				return match, false, nil
+			}
+		}
+		// Ambiguity unresolved by cwd: fall back to first candidate (ordered by path)
+		// so short-name callers get a working resolution instead of a hard error.
+		// Return ambiguous=true so handlers know not to cache the result — another
+		// caller's cwd may resolve to a different candidate. The tolerant project
+		// filter in learnings_search.go / embedding/store.go ensures learnings from
+		// the *other* candidates stay reachable via SearchUnfinished/QueryFacts.
+		log.Printf("WARNING: ResolveProjectShortStrict: ambiguous short name %q (%d candidates %v), using first: %s",
+			name, len(candidates), candidates, candidates[0])
+		return candidates[0], true, nil
 	}
 }
 
-// AmbiguousProjectError is returned by ResolveProjectShortStrict when a short name
-// maps to more than one distinct full project path. The error message lists the
-// candidates so callers can disambiguate by passing the full path.
-type AmbiguousProjectError struct {
-	Short      string
-	Candidates []string
-}
-
-func (e *AmbiguousProjectError) Error() string {
-	return fmt.Sprintf("project %q is ambiguous; %d distinct paths match. Specify one of: %s",
-		e.Short, len(e.Candidates), strings.Join(e.Candidates, ", "))
+// resolveByCWD returns the candidate that best matches cwd: exact match wins,
+// otherwise the longest path-ancestor (to prefer nested projects like worktrees).
+// Path-ancestor match requires a trailing "/" after the candidate to avoid false
+// positives like /home/user/code/yes matching /home/user/code/yesmem.
+// Returns "" if no candidate matches.
+func resolveByCWD(candidates []string, cwd string) string {
+	var best string
+	for _, c := range candidates {
+		if c == cwd {
+			return c // exact match always wins
+		}
+		if strings.HasPrefix(cwd, c+"/") {
+			if len(c) > len(best) {
+				best = c
+			}
+		}
+	}
+	return best
 }
 
 // ListAllSessions returns all sessions including subagent sessions.

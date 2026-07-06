@@ -268,7 +268,7 @@ func formatRemember(raw json.RawMessage) string {
 		Project      string `json:"project"`
 		Content      string `json:"content"`
 		ModelUsed    string `json:"model_used"`
-		SupersedesID int64 `json:"supersedes_id"`
+		SupersedesID int64  `json:"supersedes_id"`
 		Message      string `json:"message"`
 		Attribution  string `json:"attribution"`
 	}
@@ -369,22 +369,22 @@ func formatResolve(raw json.RawMessage) string {
 // formatLearnings converts a JSON array of learnings into compact one-liners with relative time.
 func formatLearnings(raw json.RawMessage) string {
 	var items []struct {
-		ID             int64    `json:"id"`
-		Content        string   `json:"content"`
-		Category       string   `json:"category"`
-		Project        string   `json:"project"`
-		Confidence     float64  `json:"confidence"`
-		HitCount       int      `json:"hit_count"`
-		UseCount       int      `json:"use_count"`
-		InjectCount    int      `json:"inject_count"`
-		Source         string   `json:"source"`
-		CreatedAt      string   `json:"created_at"`
-		Entities       []string `json:"entities,omitempty"`
-		TriggerRule    string   `json:"trigger_rule,omitempty"`
-		TaskType       string   `json:"task_type,omitempty"`
-		SessionID      string   `json:"session_id,omitempty"`
-		SupersedeReason string  `json:"supersede_reason,omitempty"`
-		Attribution    string   `json:"attribution,omitempty"`
+		ID              int64    `json:"id"`
+		Content         string   `json:"content"`
+		Category        string   `json:"category"`
+		Project         string   `json:"project"`
+		Confidence      float64  `json:"confidence"`
+		HitCount        int      `json:"hit_count"`
+		UseCount        int      `json:"use_count"`
+		InjectCount     int      `json:"inject_count"`
+		Source          string   `json:"source"`
+		CreatedAt       string   `json:"created_at"`
+		Entities        []string `json:"entities,omitempty"`
+		TriggerRule     string   `json:"trigger_rule,omitempty"`
+		TaskType        string   `json:"task_type,omitempty"`
+		SessionID       string   `json:"session_id,omitempty"`
+		SupersedeReason string   `json:"supersede_reason,omitempty"`
+		Attribution     string   `json:"attribution,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &items); err != nil {
 		// Maybe it's wrapped in an object
@@ -609,10 +609,10 @@ func (s *Server) proxyCallWithThreadID(method string, formatter func(json.RawMes
 			return mcplib.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
 		}
 		if formatter != nil {
-		if formatter != nil {
-			return mcplib.NewToolResultText(formatter(result)), nil
-		}
-		return mcplib.NewToolResultText(string(result)), nil
+			if formatter != nil {
+				return mcplib.NewToolResultText(formatter(result)), nil
+			}
+			return mcplib.NewToolResultText(string(result)), nil
 		}
 		return mcplib.NewToolResultText(string(result)), nil
 	}
@@ -861,8 +861,9 @@ func formatBroadcast(raw json.RawMessage) string {
 func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("search",
-			mcplib.WithDescription("Full-text search across sessions"),
-			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query")),
+			mcplib.WithDescription("Full-text search across conversation logs. Use when you need specific phrases, commands, or error messages from past sessions. Returns matching messages with session ID and timestamp. For semantic search use hybrid_search, for raw conversation content use deep_search."),
+			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Query in your working language.")),
+			mcplib.WithString("query_en", mcplib.Description("English translation of query.")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 			mcplib.WithString("since", mcplib.Description("ISO date lower bound")),
 			mcplib.WithString("before", mcplib.Description("ISO date upper bound")),
@@ -871,7 +872,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("remember",
-			mcplib.WithDescription("Save a learning. Model auto-resolved via param/YESMEM_MODEL_ID/proxy_state. Minimum viable: text, category, entities, anticipated_queries, trigger."),
+			mcplib.WithDescription("Save a lasting learning to persistent memory. Use after discovering a gotcha, making a decision, identifying a pattern, or receiving user feedback. Include structured metadata (entities, actions, trigger, anticipated_queries) for better retrieval. Model auto-resolved via param/YESMEM_MODEL_ID/proxy_state."),
 			mcplib.WithString("text", mcplib.Required(), mcplib.Description("Content to remember")),
 			mcplib.WithString("category", mcplib.Description("gotcha|decision|pattern|preference|explicit_teaching|strategic")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
@@ -891,7 +892,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("pin",
-			mcplib.WithDescription("Pin an instruction visible in every turn"),
+			mcplib.WithDescription("Pin a persistent instruction visible in every turn. Use for rules, constraints, or context that must survive context collapse. Scope: session (temporary) or permanent. Remove with unpin."),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Instruction to pin")),
 			mcplib.WithString("scope", mcplib.Description("session|permanent")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
@@ -899,21 +900,21 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("unpin",
-			mcplib.WithDescription("Remove a pin by ID"),
+			mcplib.WithDescription("Remove a pinned instruction by ID. Use get_pins to list active pins and their IDs first. Scope must match the pin's scope (session or permanent)."),
 			mcplib.WithNumber("id", mcplib.Required(), mcplib.Description("Pin ID")),
 			mcplib.WithString("scope", mcplib.Description("session|permanent")),
 		), s.proxyCallFormat("unpin", formatSimpleMessage))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_pins",
-			mcplib.WithDescription("List active pins"),
+			mcplib.WithDescription("List all active pinned instructions. Use to review current pins before adding or removing. Filter by project."),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 		), s.proxyCall("get_pins"))
 
 	// Agent-to-Agent Channel Messaging (fire-and-forget, no dialog state)
 	s.srv.AddTool(
 		mcplib.NewTool("send_to",
-			mcplib.WithDescription("Send message to another session"),
+			mcplib.WithDescription("Send a message to another session. Use for inter-agent communication — target is a session ID. Message types: command, response, ack, status."),
 			mcplib.WithString("target", mcplib.Required(), mcplib.Description("Target session ID")),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Message content")),
 			mcplib.WithString("msg_type", mcplib.Description("command|response|ack|status")),
@@ -921,21 +922,22 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("whoami",
-			mcplib.WithDescription("Get own session ID and agent metadata"),
+			mcplib.WithDescription("Get your own session ID and agent metadata. Use at startup to discover your identity for send_to callbacks and to confirm your agent context (section, project, backend session ID)."),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 		), s.proxyCallWithThreadID("whoami", nil))
 
 	s.srv.AddTool(
 		mcplib.NewTool("broadcast",
-			mcplib.WithDescription("Send message to all sessions in a project"),
+			mcplib.WithDescription("Send a message to all sessions in a project. Use for announcements, status updates, or coordination across all active sessions."),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Message")),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 		), s.proxyCallFormat("broadcast", formatBroadcast))
 
 	s.srv.AddTool(
 		mcplib.NewTool("deep_search",
-			mcplib.WithDescription("Deep search with full content and ±3 message context"),
-			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query")),
+			mcplib.WithDescription("Raw conversation history with ±3 messages of surrounding context. Use when you need the full untruncated content of past exchanges, including thinking blocks and command outputs. For semantic search across learnings use hybrid_search, for exact phrase matching use search."),
+			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Query in your working language.")),
+			mcplib.WithString("query_en", mcplib.Description("English translation of query.")),
 			mcplib.WithBoolean("include_thinking", mcplib.Description("Include thinking blocks")),
 			mcplib.WithBoolean("include_commands", mcplib.Description("Include command outputs")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
@@ -946,7 +948,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_session",
-			mcplib.WithDescription("Load a session by mode"),
+			mcplib.WithDescription("Load a full session by ID. Use to explore past conversations in detail. Modes: summary (overview), recent (latest messages), paginated (chunked), full (complete). For searching across sessions use search or deep_search."),
 			mcplib.WithString("session_id", mcplib.Required(), mcplib.Description("Session ID")),
 			mcplib.WithString("mode", mcplib.Description("summary|recent|paginated|full")),
 			mcplib.WithNumber("offset", mcplib.Description("Offset")),
@@ -955,19 +957,19 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("list_projects",
-			mcplib.WithDescription("List all projects with session counts"),
+			mcplib.WithDescription("List all known projects with session counts and last activity. Use for cross-project navigation and to discover active projects."),
 		), s.proxyCallFormat("list_projects", formatProjects))
 
 	s.srv.AddTool(
 		mcplib.NewTool("project_summary",
-			mcplib.WithDescription("Chronological project summary"),
+			mcplib.WithDescription("Get a chronological project summary with recent sessions and activity. Use to understand what's been happening in a project recently."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 			mcplib.WithNumber("limit", mcplib.Description("Max sessions")),
 		), s.proxyCallFormat("project_summary", formatSimpleMessage))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_learnings",
-			mcplib.WithDescription("Retrieve learnings by category or ID"),
+			mcplib.WithDescription("Retrieve saved learnings by category, project, date range, or ID. Use to recall past decisions, gotchas, patterns, and user preferences. For full-text search across raw conversation logs use search, for semantic search use hybrid_search. Pass history=true with an ID to view the full version chain."),
 			mcplib.WithNumber("id", mcplib.Description("Get by ID (ignores other filters)")),
 			mcplib.WithBoolean("history", mcplib.Description("When true with id, returns full version chain (oldest-first)")),
 			mcplib.WithString("category", mcplib.Description("gotcha|decision|pattern|preference|explicit_teaching|strategic|narrative")),
@@ -980,7 +982,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_caps",
-			mcplib.WithDescription("Load saved cap definitions. Capabilities are reusable, tested tool definitions that persist across sessions."),
+			mcplib.WithDescription("Load saved capability definitions. Use to discover available caps by name, tag, or project. Capabilities are reusable, tested tool definitions that persist across sessions."),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 			mcplib.WithString("name", mcplib.Description("Get specific cap by name")),
 			mcplib.WithString("tag", mcplib.Description("Filter by tag")),
@@ -989,7 +991,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("save_cap",
-			mcplib.WithDescription("Save an executable cap (tool definition). Auto-supersedes existing caps with the same name."),
+			mcplib.WithDescription("Save an executable capability (tool definition) that persists across sessions. Use to create reusable tools from working REPL snippets, bash commands, or multi-step workflows. Auto-supersedes existing caps with the same name. Scripts array supports tool (REPL) and handler (bash/JS) kinds."),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Capability name (e.g. 'reddit_fetch')")),
 			mcplib.WithString("description", mcplib.Description("What the cap does")),
 			mcplib.WithString("scripts", mcplib.Required(), mcplib.Description("JSON array of script objects (Cap-Spec v1.1). Each: {name, kind: 'tool'|'handler', runtime: 'repl'|'bash', body, schema?}. At least one kind='tool' script required.")),
@@ -1003,7 +1005,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("cap_proposal_decide",
-			mcplib.WithDescription("Accept or reject an auto-correct cap proposal. The proposal must be in category='cap_proposed'. On accept, the proposed bash body is applied to the active cap via save_cap with source='auto_correct_accepted'. On reject, the proposal transitions to 'cap_proposed_rejected' and the active cap is left untouched."),
+			mcplib.WithDescription("Accept or reject an auto-corrected cap proposal. Use after reviewing a proposed cap correction — accept to apply the changes, reject to keep the active cap unchanged. The proposal must be in category='cap_proposed'. On accept, the proposed bash body is applied to the active cap via save_cap with source='auto_correct_accepted'. On reject, the proposal transitions to 'cap_proposed_rejected' and the active cap is left untouched."),
 			mcplib.WithNumber("id", mcplib.Required(), mcplib.Description("learnings.id of the cap_proposed row")),
 			mcplib.WithString("decision", mcplib.Required(), mcplib.Description("'accept' or 'reject'")),
 			mcplib.WithString("notes", mcplib.Description("Optional reviewer note appended to the proposal content")),
@@ -1011,7 +1013,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("list_cap_proposals",
-			mcplib.WithDescription("List cap-correction proposals. Defaults to status='cap_proposed' (pending review). Pass 'cap_proposed_accepted', 'cap_proposed_rejected', or 'all' to see history."),
+			mcplib.WithDescription("List cap-correction proposals. Use to find pending auto-correct suggestions before reviewing and deciding with cap_proposal_decide. Defaults to status='cap_proposed' (pending review). Pass 'cap_proposed_accepted', 'cap_proposed_rejected', or 'all' to see history."),
 			mcplib.WithString("status", mcplib.Description("'cap_proposed' (default), 'cap_proposed_accepted', 'cap_proposed_rejected', or 'all'")),
 			mcplib.WithString("project", mcplib.Description("Filter by project (omit for all projects)")),
 			mcplib.WithNumber("limit", mcplib.Description("Max rows per status (default 100)")),
@@ -1019,27 +1021,27 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("register_caps",
-			mcplib.WithDescription("Generate JavaScript registerTool() code for saved caps. Execute the returned code in the REPL to make caps available as native tools."),
+			mcplib.WithDescription("Generate JavaScript registerTool() code for saved caps. Use to make caps available as native REPL tools. Execute the returned code in the REPL. Filter by project or tag."),
 			mcplib.WithString("project", mcplib.Description("Filter by project (omit for all)")),
 			mcplib.WithString("tag", mcplib.Description("Filter by tag")),
 		), s.proxyCallFormat("register_caps", formatSimpleMessage))
 
 	s.srv.AddTool(
 		mcplib.NewTool("activate_cap",
-			mcplib.WithDescription("Activate a saved cap for the current thread (thread_id is auto-injected from the current Claude session). Returns registerTool() JS to paste into the REPL. Capability re-injection on subsequent turns is automatic. NOTE: call this as a native MCP tool — do NOT invoke it from the REPL (Claude Code's REPL VM binds only a subset of MCP tools as JS globals)."),
+			mcplib.WithDescription("Activate a saved cap for the current thread (thread_id is auto-injected). Use to enable a capability for this session — returns registerTool() JS to paste into the REPL. Capability re-injection on subsequent turns is automatic. NOTE: call this as a native MCP tool — do NOT invoke it from the REPL (the REPL VM binds only a subset of MCP tools as JS globals)."),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Capability name")),
 			mcplib.WithString("project", mcplib.Description("Project scope (required for project-scoped caps)")),
 		), s.proxyCallWithThreadID("activate_cap", formatSimpleMessage))
 
 	s.srv.AddTool(
 		mcplib.NewTool("deactivate_cap",
-			mcplib.WithDescription("Deactivate a cap for the current thread (thread_id is auto-injected). The proxy stops re-injecting its registerTool snippet on subsequent turns."),
+			mcplib.WithDescription("Deactivate a cap for the current thread (thread_id is auto-injected). Use to stop capability re-injection on subsequent turns. The proxy stops re-injecting its registerTool snippet."),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Capability name")),
 		), s.proxyCallWithThreadID("deactivate_cap", formatSimpleMessage))
 
 	s.srv.AddTool(
 		mcplib.NewTool("execute_cap",
-			mcplib.WithDescription("Execute a saved CAP handler. The daemon runs the handler sandboxed (ai-jail bun -e for JS, ai-jail bash -c for bash) and returns the result as JSON."),
+			mcplib.WithDescription("Execute a saved capability handler sandboxed. Returns JSON result. Use to invoke cap tools from any context."),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Capability name")),
 			mcplib.WithString("fn", mcplib.Description("Function name (default: first tool-kind script)")),
 			mcplib.WithString("args", mcplib.Description("JSON string of arguments (default: '{}')")),
@@ -1047,9 +1049,9 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("cap_store",
-			mcplib.WithDescription("Capability database — namespaced tables for structured data. Pass columns as JSON array [{name,type}] for create_table. Pass data as JSON object for upsert (include id to update). Pass args as JSON array of bind values for where clauses."),
+			mcplib.WithDescription("Capability database — namespaced tables for structured data. Use for persistent storage within caps (create_table, upsert, query, delete, list_tables, claim_and_read). Pass columns as JSON array [{name,type}] for create_table. Pass data as JSON object for upsert (include id to update). Pass args as JSON array of bind values for WHERE clauses."),
 			mcplib.WithString("capability", mcplib.Required(), mcplib.Description("Capability name")),
-			mcplib.WithString("action", mcplib.Required(), mcplib.Description("create_table|upsert|query|delete|list_tables")),
+			mcplib.WithString("action", mcplib.Required(), mcplib.Description("create_table|upsert|query|delete|list_tables|claim_and_read")),
 			mcplib.WithString("table", mcplib.Description("Table name")),
 			mcplib.WithString("columns", mcplib.Description("JSON array of {name,type} objects (create_table)")),
 			mcplib.WithString("data", mcplib.Description("JSON object with column values (upsert)")),
@@ -1060,7 +1062,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("query_facts",
-			mcplib.WithDescription("Search learning metadata by entity, action, or keyword"),
+			mcplib.WithDescription("Search learning metadata by entity, action, or keyword. Use for targeted lookups like 'all learnings about proxy.go' or 'every git push action'. Hits the SQLite metadata table directly — faster than hybrid_search for very recent learnings that may not be vector-indexed yet."),
 			mcplib.WithString("entity", mcplib.Description("Entity filter (LIKE match)")),
 			mcplib.WithString("action", mcplib.Description("Action filter (LIKE match)")),
 			mcplib.WithString("keyword", mcplib.Description("Keyword filter (LIKE match)")),
@@ -1072,13 +1074,13 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("related_to_file",
-			mcplib.WithDescription("Which sessions touched this file?"),
+			mcplib.WithDescription("Find all sessions that edited or referenced a specific file. Use when investigating a file's history across sessions or tracking down when a change was introduced."),
 			mcplib.WithString("path", mcplib.Required(), mcplib.Description("File path")),
 		), s.proxyCallFormat("related_to_file", formatRelated))
 
 	s.srv.AddTool(
 		mcplib.NewTool("relate_learnings",
-			mcplib.WithDescription("Set semantic edge between two learnings"),
+			mcplib.WithDescription("Create a semantic relationship between two learnings. Use after saving related learnings to build a knowledge graph. Supported relations: supports, contradicts, depends_on, relates_to."),
 			mcplib.WithNumber("learning_id_a", mcplib.Required(), mcplib.Description("Learning ID")),
 			mcplib.WithNumber("learning_id_b", mcplib.Required(), mcplib.Description("Learning ID")),
 			mcplib.WithString("relation_type", mcplib.Required(), mcplib.Description("supports|contradicts|depends_on|relates_to")),
@@ -1086,25 +1088,25 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_coverage",
-			mcplib.WithDescription("Which files were edited in a project?"),
+			mcplib.WithDescription("Show which files were edited in a project across all sessions. Use for project overview and to discover hotspots. For per-file session history use related_to_file."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 		), s.proxyCallFormat("get_coverage", formatRelated))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_project_profile",
-			mcplib.WithDescription("Auto-generated project portrait"),
+			mcplib.WithDescription("Get an auto-generated project portrait. Use for quick project overview — surfaces key files, technologies, session counts, and active areas."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 		), s.proxyCallLarge("get_project_profile"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_self_feedback",
-			mcplib.WithDescription("Recent corrections and feedback"),
+			mcplib.WithDescription("Retrieve recent corrections, confirmations, and feedback about your work. Use after returning from a break to catch up on what went wrong or right in recent sessions. Filters by number of days."),
 			mcplib.WithNumber("days", mcplib.Description("Days")),
 		), s.proxyCallFormat("get_self_feedback", formatLearnings))
 
 	s.srv.AddTool(
 		mcplib.NewTool("set_persona",
-			mcplib.WithDescription("Set persona trait"),
+			mcplib.WithDescription("Set a persona trait for the user profile. Use to record user preferences, expertise levels, or communication style. Dimension is auto-detected if empty."),
 			mcplib.WithString("trait_key", mcplib.Required(), mcplib.Description("Trait key")),
 			mcplib.WithString("value", mcplib.Required(), mcplib.Description("Value")),
 			mcplib.WithString("dimension", mcplib.Description("Auto-detected if empty")),
@@ -1112,46 +1114,46 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_persona",
-			mcplib.WithDescription("Current persona profile"),
+			mcplib.WithDescription("Get the current persona profile with all traits and confidence values. Use to recall user preferences, expertise, and communication style."),
 		), s.proxyCallFormat("get_persona", formatPersona))
 
 	s.srv.AddTool(
 		mcplib.NewTool("resolve",
-			mcplib.WithDescription("Resolve an unfinished task"),
+			mcplib.WithDescription("Mark an unfinished task (learning with task_type) as resolved. Use after completing work tracked by a task-type learning. For text-based resolution without knowing the learning ID, use resolve_by_text."),
 			mcplib.WithNumber("learning_id", mcplib.Required(), mcplib.Description("Learning ID")),
 			mcplib.WithString("reason", mcplib.Description("Reason")),
 		), s.proxyCallFormat("resolve", formatResolve))
 
 	s.srv.AddTool(
 		mcplib.NewTool("resolve_by_text",
-			mcplib.WithDescription("Find and resolve unfinished task by text"),
+			mcplib.WithDescription("Find and resolve an unfinished task by searching its text content. Use after completing work when you don't have the learning ID at hand — matches against the learning's text field. Filters by project."),
 			mcplib.WithString("text", mcplib.Required(), mcplib.Description("Search text")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 		), s.proxyCallFormat("resolve_by_text", formatResolve))
 
 	s.srv.AddTool(
 		mcplib.NewTool("quarantine_session",
-			mcplib.WithDescription("Quarantine session — exclude learnings from search"),
+			mcplib.WithDescription("Exclude all learnings from a session from search and injection. Use when a session produced bad data (loops, hallucinations, wrong approaches) that should not influence future work."),
 			mcplib.WithString("session_id", mcplib.Required(), mcplib.Description("Session ID")),
 		), s.proxyCallFormat("quarantine_session", nil))
 
 	s.srv.AddTool(
 		mcplib.NewTool("skip_indexing",
-			mcplib.WithDescription("Skip indexing for this session"),
+			mcplib.WithDescription("Prevent a session from being indexed entirely. Use proactively when a session is unlikely to produce valuable learnings — saves processing and keeps the index clean."),
 			mcplib.WithString("session_id", mcplib.Required(), mcplib.Description("Session ID")),
 		), s.proxyCallFormat("skip_indexing", nil))
 
 	// ━━━ Plan management tools ━━━
 	s.srv.AddTool(
 		mcplib.NewTool("set_plan",
-			mcplib.WithDescription("Set the active plan (thread-scoped, survives proxy-collapse). Trigger: task with >5 tool cycles, >1 hypothesis, or multi-file scope. Primary anchor against context loss. Pair with update_plan."),
+			mcplib.WithDescription("Set the active plan for the current thread — survives context collapse and proxy restarts. Use for any task spanning more than 5 tool cycles, exploring multiple hypotheses, or touching multiple files. Primary anchor against context loss. Pair with update_plan."),
 			mcplib.WithString("plan", mcplib.Required(), mcplib.Description("Plan content (free text or structured list)")),
-			mcplib.WithString("scope", mcplib.Description("session|persistent")),
+			mcplib.WithString("scope", mcplib.Description("session|permanent")),
 		), s.proxyCallWithThreadID("set_plan", formatPlanResult))
 
 	s.srv.AddTool(
 		mcplib.NewTool("update_plan",
-			mcplib.WithDescription("Update active plan"),
+			mcplib.WithDescription("Update the active plan — mark items completed, add new items, or remove items. Use after each milestone or pivot to keep the plan current. The plan is your primary anchor against context loss."),
 			mcplib.WithString("plan", mcplib.Description("Full replacement")),
 			mcplib.WithArray("completed", mcplib.WithStringItems(), mcplib.Description("Items to mark done (substring match)")),
 			mcplib.WithArray("add", mcplib.WithStringItems(), mcplib.Description("Items to add")),
@@ -1160,17 +1162,17 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_plan",
-			mcplib.WithDescription("Get active plan"),
+			mcplib.WithDescription("Get the current active plan. Use for self-orientation after context collapse or when resuming work — the plan is your context-loss-proof anchor."),
 		), s.proxyCallWithThreadID("get_plan", formatPlanResult))
 
 	s.srv.AddTool(
 		mcplib.NewTool("complete_plan",
-			mcplib.WithDescription("Mark plan as completed"),
+			mcplib.WithDescription("Mark the active plan as completed. Use when all plan items are done — stops plan checkpoints and signals completion to the orchestration layer."),
 		), s.proxyCallWithThreadID("complete_plan", formatPlanResult))
 
 	s.srv.AddTool(
 		mcplib.NewTool("hybrid_search",
-			mcplib.WithDescription("Hybrid BM25 + vector search"),
+			mcplib.WithDescription("Combined BM25 keyword + vector semantic search for learning retrieval. Use as your primary memory access tool — provides the best balance of precision and recall. For raw conversation content use deep_search, for exact phrase matching use search."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 			mcplib.WithString("since", mcplib.Description("ISO date lower bound")),
@@ -1180,7 +1182,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_compacted_stubs",
-			mcplib.WithDescription("Get compacted stubs for a session"),
+			mcplib.WithDescription("Retrieve compacted (archived) conversation stubs for a session. Use to zoom into previously collapsed conversation segments by index range."),
 			mcplib.WithString("session_id", mcplib.Required(), mcplib.Description("Session ID")),
 			mcplib.WithNumber("from_idx", mcplib.Description("Start index")),
 			mcplib.WithNumber("to_idx", mcplib.Description("End index")),
@@ -1188,14 +1190,14 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("expand_context",
-			mcplib.WithDescription("Expand archived conversation parts"),
+			mcplib.WithDescription("Expand archived conversation segments back into context. Use when a stub or collapsed block needs more detail. Filter by search query or message range."),
 			mcplib.WithString("query", mcplib.Description("Search query")),
 			mcplib.WithString("message_range", mcplib.Description("Message range")),
 		), s.proxyCallWithThreadID("expand_context", nil))
 
 	s.srv.AddTool(
 		mcplib.NewTool("set_config",
-			mcplib.WithDescription("Set runtime config"),
+			mcplib.WithDescription("Set a runtime configuration value. Use to adjust thresholds, tokens, or session parameters dynamically. Without session_id the change is global; with session_id it applies only to that session."),
 			mcplib.WithString("key", mcplib.Required(), mcplib.Description("Config key")),
 			mcplib.WithString("value", mcplib.Required(), mcplib.Description("Value")),
 			mcplib.WithString("session_id", mcplib.Description("Session ID")),
@@ -1203,14 +1205,14 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_config",
-			mcplib.WithDescription("Read runtime config"),
+			mcplib.WithDescription("Read a runtime configuration value. Use to check current settings like token thresholds. Checks session-specific overrides first, then falls back to global."),
 			mcplib.WithString("key", mcplib.Required(), mcplib.Description("Config key")),
 			mcplib.WithString("session_id", mcplib.Description("Session ID")),
 		), s.proxyCall("get_config"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("docs_search",
-			mcplib.WithDescription("Search indexed documentation"),
+			mcplib.WithDescription("Search indexed documentation by keyword or semantic meaning. Use before guessing API behavior, function signatures, or idiomatic patterns. Supports filtering by source, section, doc type, and exact BM25-only mode. For listing available sources use list_docs."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query")),
 			mcplib.WithString("source", mcplib.Description("Source name filter")),
 			mcplib.WithString("section", mcplib.Description("Section heading filter")),
@@ -1223,13 +1225,13 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("list_docs",
-			mcplib.WithDescription("List indexed documentation sources"),
+			mcplib.WithDescription("List all indexed documentation sources. Use to discover available reference docs before searching. Filter by project."),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
-		), s.proxyCallFormat("list_doc_sources", formatDocSources))
+		), s.proxyCallFormat("list_docs", formatDocSources))
 
 	s.srv.AddTool(
 		mcplib.NewTool("ingest_docs",
-			mcplib.WithDescription("Import documentation (.md/.txt/.rst/.pdf) into knowledge base"),
+			mcplib.WithDescription("Import documentation (.md/.txt/.rst/.pdf) into the knowledge base. Use to index reference docs, style guides, or API manuals for docs_search retrieval. Supports rule extraction and auto-injection by file extension."),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Source name")),
 			mcplib.WithString("path", mcplib.Required(), mcplib.Description("Path to index")),
 			mcplib.WithString("version", mcplib.Description("Version string")),
@@ -1242,7 +1244,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("remove_docs",
-			mcplib.WithDescription("Remove a documentation source and its data"),
+			mcplib.WithDescription("Remove a documentation source and its indexed data. Use when a doc source is outdated or no longer needed."),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Source name")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 		), s.proxyCallFormat("remove_docs", formatRemoveDocsResult))
@@ -1250,7 +1252,7 @@ func (s *Server) registerTools() {
 	// ━━━ Scratchpad tools ━━━
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_write",
-			mcplib.WithDescription("Write a section to the shared scratchpad (upsert)"),
+			mcplib.WithDescription("Write a section to the shared persistent scratchpad (upsert). Use for cross-session state, agent coordination, or storing intermediate results. Project and section are required."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 			mcplib.WithString("section", mcplib.Required(), mcplib.Description("Section name")),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Section content")),
@@ -1258,20 +1260,20 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_read",
-			mcplib.WithDescription("Read scratchpad sections"),
+			mcplib.WithDescription("Read scratchpad sections. Use to retrieve shared state, agent briefings, or stored results. Omit section to read all sections in a project."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 			mcplib.WithString("section", mcplib.Description("Section (omit for all)")),
 		), s.proxyCallFormat("scratchpad_read", formatScratchpadRead))
 
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_list",
-			mcplib.WithDescription("List scratchpad projects and sections"),
+			mcplib.WithDescription("List scratchpad projects and their sections. Use to discover available scratchpad state across projects."),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 		), s.proxyCallFormat("scratchpad_list", formatScratchpadList))
 
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_delete",
-			mcplib.WithDescription("Delete a scratchpad section or project"),
+			mcplib.WithDescription("Delete a scratchpad section or an entire project's scratchpad. Use for cleanup after work is done. Omit section to delete the entire project."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 			mcplib.WithString("section", mcplib.Description("Section (omit to delete project)")),
 		), s.proxyCallFormat("scratchpad_delete", formatScratchpadDelete))
@@ -1279,7 +1281,7 @@ func (s *Server) registerTools() {
 	// ━━━ Agent orchestration tools ━━━
 	s.srv.AddTool(
 		mcplib.NewTool("spawn_agent",
-			mcplib.WithDescription("Spawn agent for project section"),
+			mcplib.WithDescription("Spawn an autonomous agent for a project section. Use to delegate work to an isolated agent with its own worktree, model, and token budget. Agents run as visible TUI processes. Specify backend (claude|codex|opencode) and optional model override."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 			mcplib.WithString("section", mcplib.Required(), mcplib.Description("Section name")),
 			mcplib.WithString("caller_session", mcplib.Description("Callback session")),
@@ -1292,7 +1294,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("relay_agent",
-			mcplib.WithDescription("Inject content into a running agent's terminal"),
+			mcplib.WithDescription("Inject content into a running agent's terminal. Use to send instructions, nudges, or context to an agent without stopping it. Target by agent ID or section name."),
 			mcplib.WithString("to", mcplib.Required(), mcplib.Description("Agent ID or section")),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Message to inject")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
@@ -1301,40 +1303,40 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("stop_agent",
-			mcplib.WithDescription("Stop an agent"),
+			mcplib.WithDescription("Stop a running agent. Use to terminate an agent that has completed its work or is misbehaving. Target by agent ID."),
 			mcplib.WithString("to", mcplib.Required(), mcplib.Description("Agent ID")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 		), s.proxyCall("stop_agent"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("stop_all_agents",
-			mcplib.WithDescription("Stop all agents in project"),
+			mcplib.WithDescription("Stop all running agents in a project. Use for cleanup or when resetting a project's agent state."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 		), s.proxyCall("stop_all_agents"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("resume_agent",
-			mcplib.WithDescription("Resume a stopped agent"),
+			mcplib.WithDescription("Resume a previously stopped agent. Use to continue work from where a stopped agent left off. Target by agent ID or section name."),
 			mcplib.WithString("to", mcplib.Required(), mcplib.Description("Agent ID or section name")),
 			mcplib.WithString("project", mcplib.Description("Project name (for section lookup)")),
 		), s.proxyCall("resume_agent"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("list_agents",
-			mcplib.WithDescription("List agents with status and PID"),
+			mcplib.WithDescription("List all agents in a project with their status, PID, and section. Use to monitor running agents and discover their IDs for relay_agent or stop_agent."),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 		), s.proxyCall("list_agents"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_agent",
-			mcplib.WithDescription("Get agent details"),
+			mcplib.WithDescription("Get detailed information about a specific agent. Use to check an agent's status, session ID, or worktree before sending commands via relay_agent or stop_agent."),
 			mcplib.WithString("to", mcplib.Required(), mcplib.Description("Agent ID or section")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
 		), s.proxyCall("get_agent"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("update_agent_status",
-			mcplib.WithDescription("Update agent's semantic work phase"),
+			mcplib.WithDescription("Update an agent's semantic work phase description. Use to signal progress through the 6-phase pipeline or to mark the current milestone. Free-form string, displayed in agent listings."),
 			mcplib.WithString("phase", mcplib.Required(), mcplib.Description("Work phase description")),
 			mcplib.WithString("id", mcplib.Description("Agent ID (auto-resolved)")),
 		), s.proxyCall("update_agent_status"))
@@ -1342,7 +1344,7 @@ func (s *Server) registerTools() {
 	// Code Intelligence tools
 	s.srv.AddTool(
 		mcplib.NewTool("search_code_index",
-			mcplib.WithDescription("Search code graph for symbols by name pattern."),
+			mcplib.WithDescription("Search the code graph for symbols (functions, types, methods, packages) by name pattern. Use for fast symbol lookups without filesystem access. For full-text code search use search_code."),
 			mcplib.WithString("pattern", mcplib.Required(), mcplib.Description("Substring match")),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
 			mcplib.WithString("kind", mcplib.Description("function|type|method|package")),
@@ -1352,7 +1354,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("search_code",
-			mcplib.WithDescription("Grep source files, enriched with graph context (containing function, callers)."),
+			mcplib.WithDescription("Full-text search across source files, enriched with graph context. Use to find code by content — returns containing function and callers alongside matches. For symbol-by-name search use search_code_index."),
 			mcplib.WithString("pattern", mcplib.Required(), mcplib.Description("Text pattern")),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
 			mcplib.WithString("file_pattern", mcplib.Description("Glob or substring filter")),
@@ -1361,7 +1363,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_code_context",
-			mcplib.WithDescription("Symbol details: signature, file, connected nodes."),
+			mcplib.WithDescription("Get a symbol's signature plus its graph neighbors: who calls it, what it calls, what types it references. Use before refactoring or changing a function to understand the blast radius. For locating symbols by name use search_code_index, for full source use get_code_snippet."),
 			mcplib.WithString("qualified_name", mcplib.Required(), mcplib.Description("From search_code_index")),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
 			mcplib.WithBoolean("include_neighbors", mcplib.Description("Include edges")),
@@ -1369,7 +1371,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_code_snippet",
-			mcplib.WithDescription("Full symbol body from source (func, var, const, type). Two modes: (1) qualified_name from search_code_index, (2) file + start_line + end_line for arbitrary range."),
+			mcplib.WithDescription("Retrieve full source code for a symbol or arbitrary file range. Two modes: (1) qualified_name from search_code_index, (2) file + start_line + end_line for arbitrary ranges. Use as your primary code-reading tool instead of shell cat/read."),
 			mcplib.WithString("qualified_name", mcplib.Description("From search_code_index")),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
 			mcplib.WithString("file", mcplib.Description("Relative file path for range mode")),
@@ -1379,14 +1381,14 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_file_symbols",
-			mcplib.WithDescription("List all top-level symbols in a file with line numbers. Returns func, method, var, const, type."),
+			mcplib.WithDescription("List all top-level symbols in a file with line numbers. Use for quick file overview before diving into specific symbols. Returns func, method, var, const, type."),
 			mcplib.WithString("file", mcplib.Required(), mcplib.Description("Relative file path")),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
 		), s.proxyCall("get_file_symbols"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_dependency_map",
-			mcplib.WithDescription("Package import graph with cycle detection."),
+			mcplib.WithDescription("Generate a package import dependency graph with cycle detection. Use to understand module structure and identify circular dependencies before refactoring."),
 			mcplib.WithString("package", mcplib.Required(), mcplib.Description("Package name")),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
 			mcplib.WithNumber("depth", mcplib.Description("Depth (default 2)")),
@@ -1394,7 +1396,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("graph_traverse",
-			mcplib.WithDescription("Trace call paths and dependencies from a node."),
+			mcplib.WithDescription("Trace call paths and dependencies from a code graph node. Use to understand call chains, imports, or type definitions — follow inbound/outbound edges by type (calls, imports, defines)."),
 			mcplib.WithString("from", mcplib.Required(), mcplib.Description("Starting node")),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
 			mcplib.WithString("direction", mcplib.Description("inbound|outbound|both")),
@@ -1404,27 +1406,27 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_file_index",
-			mcplib.WithDescription("List source files in a directory with learning/gotcha annotations."),
+			mcplib.WithDescription("List source files in a directory with learning and gotcha annotations. Use to browse a project's file structure and discover files with known issues or important context."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
 			mcplib.WithString("dir", mcplib.Description("Subdirectory to index (omit for project root)")),
 		), s.proxyCall("get_file_index"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("dismiss_repl_pattern",
-			mcplib.WithDescription("Manually dismiss a recorded REPL command pattern from future cap-suggestion analysis, including legacy suggestions. Resets the pattern's count to 0. At 3 dismissals the pattern is flagged permanently ignored (review later via query_facts or hybrid_search)."),
+			mcplib.WithDescription("Dismiss a recorded REPL command pattern from future cap-suggestion analysis. Use when a suggested pattern is a false positive. Resets the pattern's count to 0. At 3 dismissals the pattern is flagged permanently ignored."),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name (as given in the suggestion)")),
 			mcplib.WithString("shape_hash", mcplib.Required(), mcplib.Description("16-char shape hash from the suggestion")),
 		), s.proxyCall("dismiss_repl_pattern"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("dismiss_code_nav",
-			mcplib.WithDescription("Dismiss code-navigation suggestion for this session. Call when a Bash command was blocked by the code-nav hook but shell tools are preferred. After 5 dismissals per session, suggestions stop until next session."),
+			mcplib.WithDescription("Dismiss a code-navigation suggestion for this session. Use when the code-nav hook blocks a shell tool but you need shell access. After 5 dismissals per session, suggestions stop until next session."),
 			mcplib.WithString("session_id", mcplib.Required(), mcplib.Description("Session ID from the block message")),
 		), s.proxyCall("dismiss_code_nav"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("schedule",
-			mcplib.WithDescription("Create, update, list, or run scheduled jobs. Jobs persist across daemon restarts."),
+			mcplib.WithDescription("Create, list, delete, or run scheduled jobs. Use for recurring tasks like Telegram polling, periodic checks, or one-shot delayed work. Jobs persist across daemon restarts. Supports cron, interval, agent/headless/bash modes, and sandbox profiles."),
 			mcplib.WithString("action", mcplib.Required(), mcplib.Description("create|list|delete|run")),
 			mcplib.WithString("name", mcplib.Description("Job name (create)")),
 			mcplib.WithString("cron", mcplib.Description("5-field cron expression: min hour dom month dow (create)")),
@@ -1490,7 +1492,7 @@ func formatDocsSearchResult(raw json.RawMessage) string {
 	return sb.String()
 }
 
-// formatDocSources converts list_doc_sources JSON into compact lines.
+// formatDocSources converts list_docs JSON into compact lines.
 func formatDocSources(raw json.RawMessage) string {
 	var data struct {
 		Message string `json:"message"`
@@ -1529,11 +1531,11 @@ func formatDocSources(raw json.RawMessage) string {
 // formatIngestResult converts ingest_docs JSON into a compact summary line.
 func formatIngestResult(raw json.RawMessage) string {
 	var data struct {
-		Message            string `json:"message"`
-		FilesProcessed     int    `json:"files_processed"`
-		FilesSkipped       int    `json:"files_skipped"`
-		ChunksCreated      int    `json:"chunks_created"`
-		LearningsSuperseded int   `json:"learnings_superseded"`
+		Message             string `json:"message"`
+		FilesProcessed      int    `json:"files_processed"`
+		FilesSkipped        int    `json:"files_skipped"`
+		ChunksCreated       int    `json:"chunks_created"`
+		LearningsSuperseded int    `json:"learnings_superseded"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return string(raw)

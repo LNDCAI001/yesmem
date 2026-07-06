@@ -162,50 +162,53 @@ func (h *Handler) resolveProjectParam(params map[string]any) map[string]any {
 		return params
 	}
 
-	// Fast path: already a short name (no slashes)
-	// Still resolve — could be a stale name after project rename
-	if len(project) < 20 && project[0] != '/' {
-		// Check cache first
-		h.projectCacheMu.RLock()
-		if resolved, found := h.projectCache[project]; found {
-			h.projectCacheMu.RUnlock()
-			if isAmbiguousMarker(resolved) {
-				params["_project_error"] = stripMarker(resolved)
-			} else {
-				params["project"] = resolved
-			}
+	// Extract cwd early — it decides whether cached ambiguity errors may be
+	// served: ambiguity is cwd-dependent, the tiebreaker may resolve it for
+	// a caller standing inside one of the candidate directories.
+	cwd, _ := params["_cwd"].(string)
+
+	// Check cache (short names and full paths share one keyspace)
+	h.projectCacheMu.RLock()
+	cached, found := h.projectCache[project]
+	h.projectCacheMu.RUnlock()
+	if found {
+		if !isAmbiguousMarker(cached) {
+			params["project"] = cached
 			return params
 		}
-		h.projectCacheMu.RUnlock()
-	}
-
-	// Check cache for full paths
-	h.projectCacheMu.RLock()
-	if resolved, found := h.projectCache[project]; found {
-		h.projectCacheMu.RUnlock()
-		if isAmbiguousMarker(resolved) {
-			params["_project_error"] = stripMarker(resolved)
-		} else {
-			params["project"] = resolved
+		if cwd == "" {
+			params["_project_error"] = stripMarker(cached)
+			return params
 		}
-		return params
+		// Cached ambiguity error but cwd present: fall through to the DB
+		// lookup — the cwd tiebreaker may resolve it.
 	}
-	h.projectCacheMu.RUnlock()
 
-	// Strict DB lookup — hard-errors on ambiguous short names
-	resolved, err := h.store.ResolveProjectShortStrict(project)
+	// DB lookup. Hard-errors only on DB failures; ambiguous short names now fall back
+	// to the first candidate with ambiguous=true so the cache decision can treat them
+	// as cwd-dependent (not cacheable when cwd is empty either, because a later caller
+	// with a matching cwd may resolve to a different candidate).
+	resolved, ambiguous, err := h.store.ResolveProjectShortStrict(project, cwd)
 	cacheVal := resolved
 	if err != nil {
 		cacheVal = ambiguousMarker(err.Error())
 	}
 
-	// Cache result (including errors, to avoid repeated DB lookups)
-	h.projectCacheMu.Lock()
-	if h.projectCache == nil {
-		h.projectCache = make(map[string]string)
+	// Cache results unless this is a cwd-dependent resolution:
+	//   - cwd provided → tiebreaker is cwd-specific, would leak to other callers
+	//   - ambiguous fallback (no cwd resolved) → another caller's cwd may pick a
+	//     different candidate, must not cache the fallback either
+	// Full-path inputs resolve to themselves (deterministic) and are always safe.
+	shouldCache := strings.HasPrefix(project, "/") || (cwd == "" && !ambiguous)
+
+	if shouldCache {
+		h.projectCacheMu.Lock()
+		if h.projectCache == nil {
+			h.projectCache = make(map[string]string)
+		}
+		h.projectCache[project] = cacheVal
+		h.projectCacheMu.Unlock()
 	}
-	h.projectCache[project] = cacheVal
-	h.projectCacheMu.Unlock()
 
 	if err != nil {
 		params["_project_error"] = err.Error()
@@ -469,8 +472,8 @@ func (h *Handler) Handle(req Request) Response {
 		return h.handleDocsSearch(h.resolveProjectParam(req.Params))
 	case "get_skill_content":
 		return h.handleGetSkillContent(req.Params)
-	case "list_doc_sources":
-		return h.handleListDocSources(h.resolveProjectParam(req.Params))
+	case "list_docs":
+		return h.handleListDocs(h.resolveProjectParam(req.Params))
 	case "ingest_docs":
 		return h.handleIngestDocs(h.resolveProjectParam(req.Params))
 	case "remove_docs":

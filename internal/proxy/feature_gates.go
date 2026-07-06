@@ -69,6 +69,8 @@ func gateForFeature(g *config.FeatureGates, feature string) bool {
 		return g.Timestamps
 	case "assoc_context":
 		return g.AssocContext
+	case "loop_warning":
+		return g.LoopWarning
 	default:
 		return false
 	}

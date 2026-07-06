@@ -21,6 +21,8 @@ const (
 func NarrativePrompt() string {
 	return `You are Claude. Write a handover (4-6 sentences) to your future self.
 
+LANGUAGE: Always write responses in English. Technical tokens (JSON field names, code, commands) remain verbatim — never translate them.
+
 ALWAYS begin with: "Hey, it's me from [concrete date and time]."
 ALWAYS use concrete timestamps (e.g. "2026-03-04 14:30"), NEVER relative ones.
 

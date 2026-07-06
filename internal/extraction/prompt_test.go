@@ -29,6 +29,48 @@ func TestBuildExtractionSystemPrompt_ContainsDeadlineExample(t *testing.T) {
 	}
 }
 
+func TestAllSystemPromptsContainLanguageDirective(t *testing.T) {
+	// Contract test: every generating system prompt must contain the English directive
+	// to write content in English with verbatim technical tokens.
+	prompts := []struct {
+		name string
+		text string
+	}{
+		{"extractionPromptTemplate", extractionPromptTemplate},
+		{"SummarizeSystemPrompt", SummarizeSystemPrompt},
+		{"EvolutionSystemPrompt", EvolutionSystemPrompt},
+		{"BulkEvolutionSystemPrompt", BulkEvolutionSystemPrompt},
+		{"CrossProjectEvolutionPrompt", CrossProjectEvolutionPrompt},
+		{"DistillationSystemPrompt", DistillationSystemPrompt},
+		{"DocFilterSystemPrompt", DocFilterSystemPrompt},
+		{"DocIngestSystemPrompt", DocIngestSystemPrompt},
+		{"PersonaExtractionSystemPrompt", PersonaExtractionSystemPrompt},
+		{"codeDescribeSystemPrompt", codeDescribeSystemPrompt},
+		{"moodPrompt", moodPrompt},
+	}
+	for _, p := range prompts {
+		t.Run(p.name, func(t *testing.T) {
+			if !strings.Contains(p.text, "LANGUAGE:") {
+				t.Errorf("%s is missing the language directive", p.name)
+			}
+		})
+	}
+}
+
+func TestDistillationSystemPromptIsEnglish(t *testing.T) {
+	// DistillationSystemPrompt was DE — must be fully translated to EN
+	if strings.Contains(DistillationSystemPrompt, "destillierst") {
+		t.Error("DistillationSystemPrompt still contains German text")
+	}
+}
+
+func TestCrossProjectEvolutionPromptIsEnglish(t *testing.T) {
+	// CrossProjectEvolutionPrompt was DE — must be fully translated to EN
+	if strings.Contains(CrossProjectEvolutionPrompt, "globale Wahrheiten") {
+		t.Error("CrossProjectEvolutionPrompt still contains German text")
+	}
+}
+
 func TestGermanWeekday(t *testing.T) {
 	tests := []struct {
 		day  time.Weekday

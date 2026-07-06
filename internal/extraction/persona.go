@@ -11,6 +11,8 @@ import (
 // PersonaExtractionSystemPrompt is the system prompt for extracting persona signals.
 const PersonaExtractionSystemPrompt = `Analyze this session and extract persona signals.
 
+LANGUAGE: Always write responses in English. Technical tokens (trait keys, JSON field names) remain verbatim — never translate them.
+
 PRIORITY: UPDATE existing traits rather than creating new ones.
 
 Look for:

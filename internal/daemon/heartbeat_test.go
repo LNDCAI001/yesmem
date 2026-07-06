@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,8 +29,8 @@ func TestEnforceAgentLimits_TokenBudgetFreezes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AgentGet: %v", err)
 	}
-	if a.Status != "frozen" {
-		t.Errorf("status=%q want frozen", a.Status)
+	if a.Status != "stopped" {
+		t.Errorf("status=%q want stopped", a.Status)
 	}
 }
 
@@ -172,8 +173,8 @@ func TestAttemptRestart_FreezesOnMaxRestarts(t *testing.T) {
 	})
 	h.attemptRestart()
 	a, _ := s.AgentGet("max-hit-0")
-	if a.Status != "frozen" {
-		t.Errorf("agent at max_restarts should be frozen, status=%q", a.Status)
+	if a.Status != "stopped" {
+		t.Errorf("agent at max_restarts should be stopped, status=%q", a.Status)
 	}
 }
 
@@ -225,8 +226,8 @@ func TestAttemptRestart_PermanentIgnoresMaxRestarts(t *testing.T) {
 	})
 	h.attemptRestart()
 	a, _ := s.AgentGet("perm-0")
-	if a.Status == "frozen" {
-		t.Errorf("permanent agent should never be frozen, got frozen after max_restarts")
+	if a.Status == "stopped" {
+		t.Errorf("permanent agent should never be stopped, got stopped after max_restarts")
 	}
 }
 
@@ -423,8 +424,8 @@ func TestDetectHungAgents_StaleHeartbeat(t *testing.T) {
 	h.detectHungAgents()
 
 	a, _ := s.AgentGet("hung-stale-0")
-	if a.Status != "frozen" {
-		t.Errorf("status=%q want frozen for hung agent with dead PID", a.Status)
+	if a.Status != "stopped" {
+		t.Errorf("status=%q want stopped for hung agent with dead PID", a.Status)
 	}
 }
 
@@ -655,8 +656,8 @@ func TestEnforceAgentLimits_MaxRuntime_DeadPID_Frozen(t *testing.T) {
 	h.enforceAgentLimits()
 
 	a, _ := s.AgentGet("dead-over-runtime")
-	if a.Status != "frozen" {
-		t.Errorf("status=%q want frozen (PID dead — max_runtime freeze should fire)", a.Status)
+	if a.Status != "stopped" {
+		t.Errorf("status=%q want stopped (PID dead — max_runtime stop should fire)", a.Status)
 	}
 }
 
@@ -752,5 +753,55 @@ func TestCrashRecovery_NonYesloopAgent_SkipsYesloopEscalation(t *testing.T) {
 	}
 	if a.Status != "failed" {
 		t.Errorf("status=%q want failed", a.Status)
+	}
+}
+
+// --- pauseAgent / stopAgent semantics (replaces freezeAgent) ---
+
+func TestStopAgent_SetsStatusStopped(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{ID: "stop-1", Project: "p", Section: "s", Status: "running"})
+	h.stopAgent("stop-1", "test reason")
+	a, _ := s.AgentGet("stop-1")
+	if a.Status != "stopped" {
+		t.Errorf("stopAgent: status=%q want stopped", a.Status)
+	}
+	if !strings.HasPrefix(a.Progress, "stopped:") {
+		t.Errorf("stopAgent: progress=%q want prefix 'stopped:'", a.Progress)
+	}
+}
+
+func TestPauseAgent_SetsStatusPaused(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{ID: "pause-1", Project: "p", Section: "s", Status: "running"})
+	h.pauseAgent("pause-1", "idle escalation")
+	a, _ := s.AgentGet("pause-1")
+	if a.Status != "paused" {
+		t.Errorf("pauseAgent: status=%q want paused", a.Status)
+	}
+	if !strings.HasPrefix(a.Progress, "paused:") {
+		t.Errorf("pauseAgent: progress=%q want prefix 'paused:'", a.Progress)
+	}
+}
+
+func TestStopAgent_Idempotent(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{ID: "stop-idem", Project: "p", Section: "s", Status: "running"})
+	h.stopAgent("stop-idem", "first")
+	h.stopAgent("stop-idem", "second")
+	a, _ := s.AgentGet("stop-idem")
+	if a.Status != "stopped" {
+		t.Errorf("double stopAgent: status=%q want stopped", a.Status)
+	}
+}
+
+func TestPauseAgent_Idempotent(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{ID: "pause-idem", Project: "p", Section: "s", Status: "running"})
+	h.pauseAgent("pause-idem", "first")
+	h.pauseAgent("pause-idem", "second")
+	a, _ := s.AgentGet("pause-idem")
+	if a.Status != "paused" {
+		t.Errorf("double pauseAgent: status=%q want paused", a.Status)
 	}
 }

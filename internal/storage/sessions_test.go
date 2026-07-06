@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +37,7 @@ func TestResolveProjectShort_Empty(t *testing.T) {
 
 func TestResolveProjectShortStrict_AbsoluteReturnsCleaned(t *testing.T) {
 	s := mustOpen(t)
-	got, err := s.ResolveProjectShortStrict("/var/www/html/ccm19/main/cookie-consent-management/")
+	got, _, err := s.ResolveProjectShortStrict("/var/www/html/ccm19/main/cookie-consent-management/", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,12 +47,13 @@ func TestResolveProjectShortStrict_AbsoluteReturnsCleaned(t *testing.T) {
 	}
 }
 
-func TestResolveProjectShortStrict_UniqueShortResolves(t *testing.T) {
+func TestResolveProjectShortStrict_UniqueShortResolvesWithFullpathData(t *testing.T) {
 	s := mustOpen(t)
 	base := time.Now()
-	insertSessionForResolve(t, s, "s1", "/home/user/yesmem", "yesmem", base)
+	// Real data shape after v0.65: project_short = full path
+	insertSessionForResolve(t, s, "s1", "/home/user/yesmem", "/home/user/yesmem", base)
 
-	got, err := s.ResolveProjectShortStrict("yesmem")
+	got, _, err := s.ResolveProjectShortStrict("yesmem", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,42 +62,32 @@ func TestResolveProjectShortStrict_UniqueShortResolves(t *testing.T) {
 	}
 }
 
-func TestResolveProjectShortStrict_AmbiguousShortErrors(t *testing.T) {
+// TestResolveProjectShortStrict_AmbiguousShortFallsBackToFirstWithFullpathData verifies
+// the post-regression-fix behavior: ambiguous short names no longer hard-error but
+// resolve to the first candidate (ordered by path) so short-name callers keep working.
+// A warning is logged but no error is returned. The cwd tiebreaker still wins when it
+// applies (covered by the *_Cwd* tests below).
+func TestResolveProjectShortStrict_AmbiguousShortFallsBackToFirstWithFullpathData(t *testing.T) {
 	s := mustOpen(t)
 	base := time.Now()
-	insertSessionForResolve(t, s, "s1", "/var/www/html/ccm19/cookie-consent-management", "cookie-consent-management", base)
-	insertSessionForResolve(t, s, "s2", "/var/www/html/ccm19/main/cookie-consent-management", "cookie-consent-management", base.Add(time.Minute))
-	insertSessionForResolve(t, s, "s3", "/var/www/html/GreenWashProjekt/greenwashCCm19/cookie-consent-management", "cookie-consent-management", base.Add(2*time.Minute))
+	insertSessionForResolve(t, s, "s1", "/var/www/html/ccm19/cookie-consent-management", "/var/www/html/ccm19/cookie-consent-management", base)
+	insertSessionForResolve(t, s, "s2", "/var/www/html/ccm19/main/cookie-consent-management", "/var/www/html/ccm19/main/cookie-consent-management", base.Add(time.Minute))
+	insertSessionForResolve(t, s, "s3", "/var/www/html/GreenWashProjekt/greenwashCCm19/cookie-consent-management", "/var/www/html/GreenWashProjekt/greenwashCCm19/cookie-consent-management", base.Add(2*time.Minute))
 
-	_, err := s.ResolveProjectShortStrict("cookie-consent-management")
-	if err == nil {
-		t.Fatal("expected ambiguity error, got nil")
+	got, _, err := s.ResolveProjectShortStrict("cookie-consent-management", "")
+	if err != nil {
+		t.Fatalf("unexpected error for ambiguous short name (regression: should fall back, not error): %v", err)
 	}
-	amb, ok := err.(*AmbiguousProjectError)
-	if !ok {
-		t.Fatalf("expected *AmbiguousProjectError, got %T: %v", err, err)
-	}
-	if amb.Short != "cookie-consent-management" {
-		t.Errorf("Short = %q", amb.Short)
-	}
-	if len(amb.Candidates) != 3 {
-		t.Errorf("expected 3 candidates, got %d: %v", len(amb.Candidates), amb.Candidates)
-	}
-	msg := err.Error()
-	for _, want := range []string{
-		"/var/www/html/ccm19/cookie-consent-management",
-		"/var/www/html/ccm19/main/cookie-consent-management",
-		"/var/www/html/GreenWashProjekt/greenwashCCm19/cookie-consent-management",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error message missing %q: %s", want, msg)
-		}
+	// Candidates are ordered by path alphabetically; first is /var/www/html/GreenWashProjekt/...
+	want := "/var/www/html/GreenWashProjekt/greenwashCCm19/cookie-consent-management"
+	if got != want {
+		t.Errorf("got %q, want first candidate %q", got, want)
 	}
 }
 
 func TestResolveProjectShortStrict_UnknownShortPassthrough(t *testing.T) {
 	s := mustOpen(t)
-	got, err := s.ResolveProjectShortStrict("unknown-project")
+	got, _, err := s.ResolveProjectShortStrict("unknown-project", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,10 +96,217 @@ func TestResolveProjectShortStrict_UnknownShortPassthrough(t *testing.T) {
 	}
 }
 
+func TestResolveProjectShortStrict_CwdExactMatch(t *testing.T) {
+	s := mustOpen(t)
+	base := time.Now()
+	insertSessionForResolve(t, s, "s1", "/home/user/memory/yesmem", "/home/user/memory/yesmem", base)
+	insertSessionForResolve(t, s, "s2", "/home/user/other/yesmem", "/home/user/other/yesmem", base.Add(time.Minute))
+
+	// cwd matches first candidate exactly
+	got, _, err := s.ResolveProjectShortStrict("yesmem", "/home/user/memory/yesmem")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/home/user/memory/yesmem" {
+		t.Errorf("got %q, want /home/user/memory/yesmem", got)
+	}
+}
+
+func TestResolveProjectShortStrict_CwdAncestorMatch(t *testing.T) {
+	s := mustOpen(t)
+	base := time.Now()
+	insertSessionForResolve(t, s, "s1", "/home/user/memory/yesmem", "/home/user/memory/yesmem", base)
+	insertSessionForResolve(t, s, "s2", "/home/user/other/yesmem", "/home/user/other/yesmem", base.Add(time.Minute))
+
+	// cwd is a subdirectory (worktree) of the first candidate
+	got, _, err := s.ResolveProjectShortStrict("yesmem", "/home/user/memory/yesmem/.worktrees/yesloop-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/home/user/memory/yesmem" {
+		t.Errorf("got %q, want /home/user/memory/yesmem", got)
+	}
+}
+
+func TestResolveProjectShortStrict_CwdAncestorExactBoundary(t *testing.T) {
+	// Guard: /home/user/memory/yes must NOT be ancestor of /home/user/memory/yesmem
+	s := mustOpen(t)
+	base := time.Now()
+	insertSessionForResolve(t, s, "s1", "/home/user/memory/yes", "/home/user/memory/yes", base)
+	insertSessionForResolve(t, s, "s2", "/home/user/memory/yesmem", "/home/user/memory/yesmem", base.Add(time.Minute))
+
+	// "yes" only matches /home/user/memory/yes (basename), not /home/user/memory/yesmem
+	got, _, err := s.ResolveProjectShortStrict("yes", "/home/user/memory/yesmem")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/home/user/memory/yes" {
+		t.Errorf("got %q, want /home/user/memory/yes", got)
+	}
+}
+
+func TestResolveProjectShortStrict_CwdLongestAncestor(t *testing.T) {
+	// When a worktree project shares the same basename as its parent,
+	// a caller inside the worktree should resolve to the worktree (longest match).
+	s := mustOpen(t)
+	base := time.Now()
+	insertSessionForResolve(t, s, "s1", "/home/user/memory/yesmem", "/home/user/memory/yesmem", base)
+	insertSessionForResolve(t, s, "s2", "/home/user/memory/yesmem/.worktrees/yesmem", "/home/user/memory/yesmem/.worktrees/yesmem", base.Add(time.Minute))
+
+	// cwd inside the worktree
+	got, _, err := s.ResolveProjectShortStrict("yesmem", "/home/user/memory/yesmem/.worktrees/yesmem/src")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/home/user/memory/yesmem/.worktrees/yesmem" {
+		t.Errorf("got %q, want /home/user/memory/yesmem/.worktrees/yesmem (longest ancestor)", got)
+	}
+}
+
+func TestResolveProjectShortStrict_CwdAncestorFalsePositiveGuard(t *testing.T) {
+	// Guard: basename boundary — "proj" must NOT match "proj-other" as ancestor
+	s := mustOpen(t)
+	base := time.Now()
+	insertSessionForResolve(t, s, "s1", "/home/user/memory/proj", "/home/user/memory/proj", base)
+	insertSessionForResolve(t, s, "s2", "/home/user/memory/proj-other", "/home/user/memory/proj-other", base.Add(time.Minute))
+
+	got, _, err := s.ResolveProjectShortStrict("proj", "/home/user/memory/proj/.worktrees/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/home/user/memory/proj" {
+		t.Errorf("got %q, want /home/user/memory/proj", got)
+	}
+}
+
+// TestResolveProjectShortStrict_AmbiguousNoCwdMatch verifies the post-fix fallback:
+// when cwd doesn't disambiguate, the function returns the first candidate with no error.
+// Previously this returned *AmbiguousProjectError; now it returns first-match (logged).
+func TestResolveProjectShortStrict_AmbiguousNoCwdMatch(t *testing.T) {
+	s := mustOpen(t)
+	base := time.Now()
+	insertSessionForResolve(t, s, "s1", "/home/user/memory/yesmem", "/home/user/memory/yesmem", base)
+	insertSessionForResolve(t, s, "s2", "/home/user/other/yesmem", "/home/user/other/yesmem", base.Add(time.Minute))
+
+	// cwd doesn't match either candidate → falls back to first with ambiguous=true
+	got, amb, err := s.ResolveProjectShortStrict("yesmem", "/unrelated/path")
+	if err != nil {
+		t.Fatalf("ambiguous short name should fall back to first candidate, not error: %v", err)
+	}
+	if !amb {
+		t.Error("expected ambiguous=true for unresolved cwd mismatch")
+	}
+	if got != "/home/user/memory/yesmem" {
+		t.Errorf("got %q, want first candidate /home/user/memory/yesmem", got)
+	}
+}
+
+func TestResolveProjectShortStrict_ZeroCandidates(t *testing.T) {
+	s := mustOpen(t)
+	// No sessions in DB → 0 candidates
+	got, _, err := s.ResolveProjectShortStrict("nonexistent", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "nonexistent" {
+		t.Errorf("got %q, want passthrough 'nonexistent'", got)
+	}
+}
+
+func TestResolveProjectShortStrict_EmptyName(t *testing.T) {
+	s := mustOpen(t)
+	got, _, err := s.ResolveProjectShortStrict("", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
 func TestProjectShortFromPath_NoCollisionFromModels(t *testing.T) {
 	a := models.ProjectShortFromPath("/var/www/html/ccm19/cookie-consent-management")
 	b := models.ProjectShortFromPath("/var/www/html/GreenWashProjekt/greenwashCCm19/cookie-consent-management")
 	if a == b {
 		t.Fatalf("expected distinct project identifiers, both = %q", a)
+	}
+}
+
+func TestMigrationV066_AgentsProjectBackfill(t *testing.T) {
+	s := mustOpen(t)
+
+	// Insert sessions with full paths (post-v0.65 data shape)
+	_, err := s.db.Exec(`INSERT INTO sessions (id, project, project_short, started_at, indexed_at, jsonl_path)
+		VALUES ('s1', '/home/user/memory/yesmem', '/home/user/memory/yesmem', datetime('now'), datetime('now'), '/s1.jsonl')`)
+	if err != nil {
+		t.Fatalf("insert session s1: %v", err)
+	}
+	_, err = s.db.Exec(`INSERT INTO sessions (id, project, project_short, started_at, indexed_at, jsonl_path)
+		VALUES ('s2', '/home/user/other/yesmem', '/home/user/other/yesmem', datetime('now'), datetime('now'), '/s2.jsonl')`)
+	if err != nil {
+		t.Fatalf("insert session s2: %v", err)
+	}
+	_, err = s.db.Exec(`INSERT INTO sessions (id, project, project_short, started_at, indexed_at, jsonl_path)
+		VALUES ('s3', '/home/user/unique-proj', '/home/user/unique-proj', datetime('now'), datetime('now'), '/s3.jsonl')`)
+	if err != nil {
+		t.Fatalf("insert session s3: %v", err)
+	}
+
+	// Insert agents with short-name projects (the pre-v0.66 state)
+	_, err = s.db.Exec(`INSERT INTO agents (id, project, section, status) VALUES ('a1', 'yesmem', 'test1', 'running')`)
+	if err != nil {
+		t.Fatalf("insert agent a1: %v", err)
+	}
+	_, err = s.db.Exec(`INSERT INTO agents (id, project, section, status) VALUES ('a2', 'unique-proj', 'test2', 'running')`)
+	if err != nil {
+		t.Fatalf("insert agent a2: %v", err)
+	}
+	_, err = s.db.Exec(`INSERT INTO agents (id, project, section, status) VALUES ('a3', '/home/user/already/full', 'test3', 'running')`)
+	if err != nil {
+		t.Fatalf("insert agent a3: %v", err)
+	}
+
+	// Run the migration
+	migration := `UPDATE agents SET project = (
+		SELECT s.project FROM sessions s
+		WHERE s.project LIKE '/%' AND s.project LIKE '%/' || agents.project
+		LIMIT 1
+	) WHERE agents.project NOT LIKE '/%'
+	AND 1 = (
+		SELECT COUNT(DISTINCT s2.project) FROM sessions s2
+		WHERE s2.project LIKE '/%' AND s2.project LIKE '%/' || agents.project
+	)`
+	_, err = s.db.Exec(migration)
+	if err != nil {
+		t.Fatalf("migration v0.66: %v", err)
+	}
+
+	// a1 'yesmem' → ambiguous (2 matches) → should NOT be updated
+	var proj string
+	s.db.QueryRow("SELECT project FROM agents WHERE id = 'a1'").Scan(&proj)
+	if proj != "yesmem" {
+		t.Errorf("agent a1: got %q, want 'yesmem' (ambiguous, should not backfill)", proj)
+	}
+
+	// a2 'unique-proj' → unique match → should be updated
+	s.db.QueryRow("SELECT project FROM agents WHERE id = 'a2'").Scan(&proj)
+	if proj != "/home/user/unique-proj" {
+		t.Errorf("agent a2: got %q, want '/home/user/unique-proj'", proj)
+	}
+
+	// a3 already full path → should not be changed
+	s.db.QueryRow("SELECT project FROM agents WHERE id = 'a3'").Scan(&proj)
+	if proj != "/home/user/already/full" {
+		t.Errorf("agent a3: got %q, want '/home/user/already/full'", proj)
+	}
+
+	// Idempotency: run migration again, no changes
+	_, err = s.db.Exec(migration)
+	if err != nil {
+		t.Fatalf("migration v0.66 (2nd run): %v", err)
+	}
+	s.db.QueryRow("SELECT project FROM agents WHERE id = 'a2'").Scan(&proj)
+	if proj != "/home/user/unique-proj" {
+		t.Errorf("agent a2 after 2nd run: got %q, want '/home/user/unique-proj'", proj)
 	}
 }

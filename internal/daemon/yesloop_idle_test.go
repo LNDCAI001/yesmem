@@ -113,7 +113,7 @@ func TestCheckYesloopIdle_NotRunning(t *testing.T) {
 		Section:   "yesloop-stopped",
 		SessionID: "sess-2",
 		PID:       999998,
-		Status:    "frozen",
+		Status:    "paused",
 	}
 	if err := s.AgentCreate(agent); err != nil {
 		t.Fatalf("AgentCreate: %v", err)
@@ -390,13 +390,13 @@ func TestCheckYesloopIdle_MaxRefires(t *testing.T) {
 		t.Error("after max re-fires, agent should transition to DONE (escalated)")
 	}
 
-	// Agent should be frozen in the store
+	// Agent should be paused in the store
 	agent, err := s.AgentGet("refire-1")
 	if err != nil {
 		t.Fatalf("AgentGet: %v", err)
 	}
-	if agent.Status != "frozen" {
-		t.Errorf("after escalation, agent status should be frozen, got %s", agent.Status)
+	if agent.Status != "paused" {
+		t.Errorf("after escalation, agent status should be paused, got %s", agent.Status)
 	}
 	if !strings.Contains(agent.Progress, "yesloop-idle") {
 		t.Errorf("progress should mention yesloop-idle, got %s", agent.Progress)

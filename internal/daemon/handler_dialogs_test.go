@@ -127,6 +127,118 @@ func TestResolveSessionID_ActiveSessionFallback(t *testing.T) {
 	}
 }
 
+// --- resolveSessionID DB PID fallback (parallel-safe agent resolution) ---
+// When pidMap (in-memory) and PID file (on-disk) misses, the resolver must
+// consult the agents table directly: WHERE pid = ? AND status='running'.
+// This closes the gap for parallel agents where the global
+// active_session_opencode proxy-state is Last-Writer-Wins and would route
+// every agent's whoami() to whichever agent last made a proxy request.
+
+func TestResolveSessionID_PIDDBFallback(t *testing.T) {
+	h, s := mustHandler(t)
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-pid-db", Project: "proj", Section: "sec",
+		SessionID: "pid-db-sess", PID: 11111,
+		Status: "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// No pidMap entry, no PID file — DB fallback must resolve.
+	got := h.resolveSessionID(map[string]any{"_caller_pid": float64(11111)}, "missing")
+	if got != "pid-db-sess" {
+		t.Errorf("got %q, want pid-db-sess (DB PID fallback)", got)
+	}
+}
+
+func TestResolveSessionID_PIDDBFallback_SkipsStopped(t *testing.T) {
+	h, s := mustHandler(t)
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-pid-stopped", Project: "proj", Section: "sec",
+		SessionID: "stopped-sess", PID: 22222,
+		Status: "stopped",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Stopped agent must NOT match (PID reuse protection).
+	got := h.resolveSessionID(map[string]any{"_caller_pid": float64(22222)}, "missing")
+	if got == "stopped-sess" {
+		t.Errorf("resolver matched stopped agent — PID reuse risk")
+	}
+}
+
+func TestResolveSessionID_PIDDBFallback_PrefersInMemoryMap(t *testing.T) {
+	h, s := mustHandler(t)
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-db", Project: "proj", Section: "sec",
+		SessionID: "db-sess", PID: 33333,
+		Status: "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Populate pidMap with a different session for the same PID.
+	// The in-memory map must win over the DB fallback so explicit registerPID
+	// calls remain authoritative for Claude-Code flow.
+	h.pidMapMu.Lock()
+	h.pidMap["in-memory-sess"] = 33333
+	h.pidMapMu.Unlock()
+
+	got := h.resolveSessionID(map[string]any{"_caller_pid": float64(33333)}, "missing")
+	if got != "in-memory-sess" {
+		t.Errorf("got %q, want in-memory-sess (pidMap must outrank DB)", got)
+	}
+}
+
+func TestResolveSessionID_PIDDBFallback_NoCallerPID(t *testing.T) {
+	h, _ := mustHandler(t)
+	// No _caller_pid in params — DB fallback must not fire. Should fall
+	// through to downstream logic (active-session fallback etc.) without
+	// panic and without matching any agent row via PID 0.
+	got := h.resolveSessionID(map[string]any{}, "missing")
+	// With no active session and no caller PID, resolver must return "" —
+	// a non-empty value here would indicate a spurious match against a
+	// freshly-spawned row that has not yet set agents.pid.
+	if got != "" {
+		t.Errorf("resolveSessionID without _caller_pid or active session must return empty, got %q", got)
+	}
+}
+
+// --- Parallel-safe resolution: two concurrent non-claude agents ---
+// The core invariant this whole change protects: two opencode agents running
+// at the same time, with distinct PIDs, must resolve to their own identities
+// — not whichever last touched the global proxy-state. This test would fail
+// under the old Last-Writer-Wins active_session_opencode fallback because
+// both PIDs would resolve to whichever session the proxy-state held.
+
+func TestResolveSessionID_PIDDBFallback_TwoParallelAgents(t *testing.T) {
+	h, s := mustHandler(t)
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-alpha", Project: "proj-a", Section: "sec-a",
+		SessionID: "alpha-sess", PID: 44441,
+		Status: "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-beta", Project: "proj-b", Section: "sec-b",
+		SessionID: "beta-sess", PID: 44442,
+		Status: "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Alpha resolves to alpha-sess
+	if got := h.resolveSessionID(map[string]any{"_caller_pid": float64(44441)}, "missing"); got != "alpha-sess" {
+		t.Errorf("PID 44441: want alpha-sess, got %q", got)
+	}
+	// Beta resolves to beta-sess — not hijacked by alpha's prior resolution
+	if got := h.resolveSessionID(map[string]any{"_caller_pid": float64(44442)}, "missing"); got != "beta-sess" {
+		t.Errorf("PID 44442: want beta-sess, got %q", got)
+	}
+	// And re-resolving alpha still works (no LWW contamination)
+	if got := h.resolveSessionID(map[string]any{"_caller_pid": float64(44441)}, "missing"); got != "alpha-sess" {
+		t.Errorf("PID 44441 second call: want alpha-sess, got %q (parallel resolution not stable)", got)
+	}
+}
+
 // --- handleStartDialog ---
 
 func TestHandleStartDialog_OK(t *testing.T) {
@@ -869,5 +981,72 @@ func TestHandleWhoami_OmitsModelWhenProxyStateMissing(t *testing.T) {
 	m := resultMap(t, resp)
 	if v, ok := m["model"]; ok && v != "" {
 		t.Errorf("model should be empty/missing when proxy_state absent, got %v", v)
+	}
+}
+
+// --- whoami prefix-strip (opencode/codex backend sessions) ---
+// resolveSessionID returns "opencode:<id>" / "codex:<id>" (prefixed) when the
+// caller came in via the OpenAI/proxy path. The DB stores bare ids in
+// opencode_session_id / codex_session_id. The prefix is stripped at the
+// storage-layer boundary (internal/storage/agents.go stripAgentPrefix) inside
+// AgentGetAnyBySession; whoami passes sessionID verbatim and keeps the
+// prefixed value in the response to preserve the caller contract.
+
+func TestHandleWhoami_StripsOpenCodePrefix(t *testing.T) {
+	h, s := mustHandler(t)
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-oc-prefix", Project: "proj-oc", Section: "sec-oc",
+		SessionID: "synthetic-oc", OpencodeSessionID: "ses_oc_real_1",
+		Status: "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp := h.Handle(Request{Method: "whoami", Params: map[string]any{
+		"session_id":     "opencode:ses_oc_real_1",
+		"_source_agent":  "opencode",
+	}})
+	if resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	m := resultMap(t, resp)
+	if m["is_agent"] != true {
+		t.Errorf("is_agent=%v, want true (opencode prefix should still match)", m["is_agent"])
+	}
+	if m["agent_id"] != "agent-oc-prefix" {
+		t.Errorf("agent_id=%v, want agent-oc-prefix", m["agent_id"])
+	}
+	if m["project"] != "proj-oc" {
+		t.Errorf("project=%v, want proj-oc", m["project"])
+	}
+	if m["session_id"] != "opencode:ses_oc_real_1" {
+		t.Errorf("session_id=%v, want prefixed value preserved in response", m["session_id"])
+	}
+}
+
+func TestHandleWhoami_StripsCodexPrefix(t *testing.T) {
+	h, s := mustHandler(t)
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-cx-prefix", Project: "proj-cx", Section: "sec-cx",
+		SessionID: "synthetic-cx", CodexSessionID: "ses_cx_real_1",
+		Status: "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp := h.Handle(Request{Method: "whoami", Params: map[string]any{
+		"session_id":     "codex:ses_cx_real_1",
+		"_source_agent":  "codex",
+	}})
+	if resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	m := resultMap(t, resp)
+	if m["is_agent"] != true {
+		t.Errorf("is_agent=%v, want true (codex prefix should still match)", m["is_agent"])
+	}
+	if m["agent_id"] != "agent-cx-prefix" {
+		t.Errorf("agent_id=%v, want agent-cx-prefix", m["agent_id"])
+	}
+	if m["project"] != "proj-cx" {
+		t.Errorf("project=%v, want proj-cx", m["project"])
 	}
 }

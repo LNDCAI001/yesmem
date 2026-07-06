@@ -188,7 +188,7 @@ func (h *Handler) maybeRefire(agent storage.Agent, state *yesloopIdleState, rela
 		state.state = yesloopIdleStateDone
 		log.Printf("[yesloop-idle] agent %s (%s) ESCALATION: %s (refireCount=%d, max=%d)",
 			agent.ID, agent.Section, reason, state.refireCount, yesloopIdleMaxRefires)
-		h.freezeAgent(agent.ID, fmt.Sprintf("yesloop-idle escalation: %s", reason))
+		h.pauseAgent(agent.ID, fmt.Sprintf("yesloop-idle escalation: %s", reason))
 		h.notifyOrchestrator(agent, fmt.Sprintf("DEAD_AGENT: Agent %s (%s) idle escalation - %s", agent.ID, agent.Section, reason))
 		return
 	}

@@ -169,6 +169,7 @@ type FeatureGates struct {
 	ThinkReminderMinChars  int  `yaml:"think_reminder_min_chars"`   // min user text length to trigger think_reminder (0=always)
 	Timestamps             bool `yaml:"timestamps"`                 // inject [HH:MM:SS] [msg:N] [+Δ] markers
 	AssocContext           bool `yaml:"assoc_context"`              // inject [assoc-context] from hybrid_search (frozen per msg:N)
+	LoopWarning            bool `yaml:"loop_warning"`               // inject [loop-warning] when loop detection fires (frozen per msg:N)
 }
 
 // PromptFlags holds prompt injection flags for a specific profile.
@@ -449,13 +450,13 @@ func Default() *Config {
 			},
 			SkillEvalInject:          "silent",
 		ModelFeatures: map[string]*FeatureGates{
-		"claude":   {SkillEval: true, Briefing: true, RulesReminder: true, PlanCheckpoint: true, ThinkReminder: true, Timestamps: false, AssocContext: true},
-		"deepseek": {SkillEval: true, Briefing: true, RulesReminder: true, PlanCheckpoint: false, ThinkReminder: true, Timestamps: true, AssocContext: true},
-		"gpt":      {SkillEval: true, Briefing: true, RulesReminder: true, ThinkReminder: false, Timestamps: false, AssocContext: true},
-		"openai":   {SkillEval: true, Briefing: true, RulesReminder: true, ThinkReminder: false, Timestamps: false, AssocContext: true},
+		"claude":   {SkillEval: true, Briefing: true, RulesReminder: true, PlanCheckpoint: true, ThinkReminder: true, Timestamps: false, AssocContext: true, LoopWarning: true},
+		"deepseek": {SkillEval: true, Briefing: true, RulesReminder: true, PlanCheckpoint: false, ThinkReminder: true, Timestamps: true, AssocContext: true, LoopWarning: true},
+		"gpt":      {SkillEval: true, Briefing: true, RulesReminder: true, ThinkReminder: false, Timestamps: false, AssocContext: true, LoopWarning: true},
+		"openai":   {SkillEval: true, Briefing: true, RulesReminder: true, ThinkReminder: false, Timestamps: false, AssocContext: true, LoopWarning: true},
 		},
 		FeatureDefaults: &FeatureGates{
-			SkillEval: true, Briefing: true, RulesReminder: true, PlanCheckpoint: true, ThinkReminder: true, Timestamps: true,
+			SkillEval: true, Briefing: true, RulesReminder: true, PlanCheckpoint: true, ThinkReminder: true, Timestamps: true, LoopWarning: true,
 		},
 			CacheKeepaliveEnabled:     true,
 			CacheKeepaliveMode:        "5m",

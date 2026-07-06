@@ -3,6 +3,8 @@ package extraction
 // DocFilterSystemPrompt is the Pass 1 prompt: filter specialist knowledge from documentation.
 const DocFilterSystemPrompt = `You are a knowledge filter for technical documentation.
 
+LANGUAGE: Always write responses in English. Technical tokens (JSON field names, code, commands) remain verbatim — never translate them.
+
 STEP 0 — PROCESS SKILL DETECTION:
 Before extracting anything, check whether the document is a PROCESS SKILL:
 - Does it contain step-by-step workflows ("Step 1... Step 2... Step 3...")?
@@ -46,6 +48,8 @@ Quality over quantity — better 5 good points than 50 trivial ones.`
 // DocIngestSystemPrompt is the Pass 2 prompt: structure filtered specialist knowledge into learnings.
 const DocIngestSystemPrompt = `You are a knowledge structurer. You receive a filtered list of specialist knowledge points
 and group them into coherent, atomic learnings.
+
+LANGUAGE: Always write responses in English. Technical tokens (JSON field names, version tags, code) remain verbatim — never translate them.
 
 RULES:
 - Merge related points into one learning (e.g. all Go 1.25 features)

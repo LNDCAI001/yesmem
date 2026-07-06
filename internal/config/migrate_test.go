@@ -54,7 +54,24 @@ func TestMigrateConfig_SkipsExistingFields(t *testing.T) {
   model_features:
     claude:
       skill_eval: true
+      briefing: true
+      rules_reminder: true
+      plan_checkpoint: true
+      think_reminder: true
       think_reminder_min_chars: 0
+      assoc_context: true
+      timestamps: false
+      loop_warning: true
+  feature_defaults:
+    skill_eval: true
+    briefing: true
+    rules_reminder: true
+    plan_checkpoint: true
+    think_reminder: true
+    think_reminder_min_chars: 0
+    assoc_context: false
+    timestamps: true
+    loop_warning: true
 
 paths:
   opencode_db: /custom/opencode.db
@@ -230,7 +247,24 @@ func TestMigrateConfig_IdempotentModelFeatures(t *testing.T) {
   model_features:
     claude:
       skill_eval: true
+      briefing: true
+      rules_reminder: true
+      plan_checkpoint: true
+      think_reminder: true
       think_reminder_min_chars: 0
+      assoc_context: true
+      timestamps: false
+      loop_warning: true
+  feature_defaults:
+    skill_eval: true
+    briefing: true
+    rules_reminder: true
+    plan_checkpoint: true
+    think_reminder: true
+    think_reminder_min_chars: 0
+    assoc_context: false
+    timestamps: true
+    loop_warning: true
 
 paths:
   opencode_db: /custom/opencode.db
@@ -330,5 +364,324 @@ func TestMigrateConfig_CreatesBackup(t *testing.T) {
 		if content != strings.TrimSpace(original) {
 			t.Errorf("backup content mismatch:\n got:  %s\nwant: %s", content, original)
 		}
+	}
+}
+
+// TestMigrateConfig_PerKeyAddsMissingGates verifies that an existing model_features
+// block with pre-loop-warning vintage (8 keys per entry, missing loop_warning)
+// gets the missing gate key added to each model entry AND to feature_defaults.
+func TestMigrateConfig_PerKeyAddsMissingGates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`proxy:
+  enabled: true
+  skill_eval_inject: "silent"
+  effort_floor: ""
+  auto_configure_providers: true
+  openai_target: "https://api.openai.com"
+  reset_cache: false
+  cache_keepalive_min_messages: 10
+  model_features:
+    claude:
+      skill_eval: true
+      briefing: true
+      rules_reminder: true
+      plan_checkpoint: true
+      think_reminder: true
+      think_reminder_min_chars: 0
+      assoc_context: true
+      timestamps: false
+    deepseek:
+      skill_eval: true
+      briefing: true
+      rules_reminder: true
+      plan_checkpoint: false
+      think_reminder: true
+      think_reminder_min_chars: 0
+      assoc_context: true
+      timestamps: true
+  feature_defaults:
+    skill_eval: true
+    briefing: true
+    rules_reminder: true
+    plan_checkpoint: true
+    think_reminder: true
+    think_reminder_min_chars: 0
+    assoc_context: false
+    timestamps: true
+
+paths:
+  opencode_db: /custom/opencode.db
+
+agents:
+  default_backend: claude
+
+exclude_projects:
+  - /home/testuser
+  - /tmp
+
+caps_dir: ""
+default_sandbox_profile: ""
+secrets_sanitization:
+  enabled: false
+http:
+  enabled: false
+
+forked_agents:
+  max_forks_per_session: 50
+  max_cost_per_session: 5
+
+token_thresholds:
+  deepseek: 600000
+  glm-5.2: 500000
+
+pricing:
+  deepseek-v4-flash: {input: 0.14, output: 0.56}
+`), 0644)
+
+	n, err := MigrateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 3 keys added: loop_warning to claude + deepseek + feature_defaults.
+	if n != 3 {
+		t.Errorf("expected 3 fields added (loop_warning x3), got %d", n)
+	}
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+	if got := strings.Count(content, "loop_warning: true"); got != 3 {
+		t.Errorf("expected 3 loop_warning:true occurrences (claude+deepseek+feature_defaults), got %d", got)
+	}
+}
+
+// TestMigrateConfig_PerKeyLoopWarningTrue verifies that loop_warning specifically
+// migrates to true (not false like the other gates). Rationale: loop detection
+// ran ungated before the feature gate existed; defaulting to false would regress.
+func TestMigrateConfig_PerKeyLoopWarningTrue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`proxy:
+  enabled: true
+  model_features:
+    claude:
+      skill_eval: true
+
+feature_defaults:
+  skill_eval: true
+`), 0644)
+
+	MigrateConfig(path)
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+	if !strings.Contains(content, "loop_warning: true") {
+		t.Errorf("expected loop_warning: true in migrated config, got:\n%s", content)
+	}
+	if strings.Contains(content, "loop_warning: false") {
+		t.Errorf("loop_warning must NOT be false — would regress pre-gate loop detection")
+	}
+}
+
+// TestMigrateConfig_PerKeyNoGlmInsert verifies that migration does NOT add a
+// glm model entry to existing configs. glm only ships via the fresh template
+// (modelFeaturesBlock); existing configs rely on feature_defaults fallback.
+func TestMigrateConfig_PerKeyNoGlmInsert(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`proxy:
+  enabled: true
+  model_features:
+    claude:
+      skill_eval: true
+`), 0644)
+
+	MigrateConfig(path)
+
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "glm:") {
+		t.Errorf("migration must NOT insert glm block into existing configs; got:\n%s", string(data))
+	}
+}
+
+// TestMigrateConfig_PerKeyIdempotent verifies that a second MigrateConfig run
+// after per-key migration adds zero fields.
+func TestMigrateConfig_PerKeyIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`proxy:
+  enabled: true
+  model_features:
+    claude:
+      skill_eval: true
+
+feature_defaults:
+  skill_eval: true
+`), 0644)
+
+	if _, err := MigrateConfig(path); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := MigrateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("second MigrateConfig run should be idempotent (0 added), got %d", n)
+	}
+}
+
+// TestMigrateConfig_PerKeyCustomModel verifies that a custom (non-template)
+// model entry in a user config also receives per-key gate migration. The
+// discovery logic walks any sub-section header under model_features, not a
+// hardcoded model list.
+func TestMigrateConfig_PerKeyCustomModel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`proxy:
+  enabled: true
+  model_features:
+    qwen:
+      skill_eval: true
+`), 0644)
+
+	MigrateConfig(path)
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+	if !strings.Contains(content, "qwen:") {
+		t.Errorf("qwen entry should still be present after migration")
+	}
+	// qwen should have received loop_warning: true (dynamic discovery, not hardcoded).
+	qwenIdx := strings.Index(content, "qwen:")
+	loopIdx := strings.Index(content, "loop_warning:")
+	mfEnd := strings.Index(content, "\n  feature_defaults:")
+	if mfEnd < 0 {
+		mfEnd = len(content)
+	}
+	if loopIdx < 0 || loopIdx < qwenIdx || loopIdx > mfEnd {
+		t.Errorf("expected loop_warning: true inside qwen section, content:\n%s", content)
+	}
+}
+
+// TestMigrateConfig_PerKeyInlineCommentHeader verifies that section headers
+// carrying an inline comment (e.g., "claude: # preset") are still migrated.
+// Previously the exact-match header check silently skipped such entries.
+func TestMigrateConfig_PerKeyInlineCommentHeader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`proxy:
+  enabled: true
+  model_features:
+    claude: # anthropic preset
+      skill_eval: true
+`), 0644)
+
+	n, _ := MigrateConfig(path)
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+	if !strings.Contains(content, "loop_warning: true") {
+		t.Errorf("claude with inline comment header should still receive loop_warning, content:\n%s", content)
+	}
+	if n == 0 {
+		t.Errorf("expected migration to add keys to inline-comment-header section, got n=%d", n)
+	}
+}
+
+// TestMigrateConfig_CreatesFeatureDefaultsWhenMissing verifies that an existing
+// model_features block WITHOUT a sibling feature_defaults gets the full
+// feature_defaults section inserted with documented template values (NOT the
+// gateDefaults-false values). Rationale: previously a missing feature_defaults
+// meant code-false fallback; a newly created visible section should carry the
+// documented defaults so ungated features (e.g. loop_warning) don't regress.
+func TestMigrateConfig_CreatesFeatureDefaultsWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`proxy:
+  enabled: true
+  model_features:
+    claude:
+      skill_eval: true
+`), 0644)
+
+	n, err := MigrateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+
+	// feature_defaults section must now exist.
+	fdIdx := strings.Index(content, "feature_defaults:")
+	if fdIdx < 0 {
+		t.Fatalf("feature_defaults section not created; content:\n%s", content)
+	}
+
+	// Template values must be present (NOT gateDefaults-false values).
+	// Critical: loop_warning and briefing must be true.
+	wantTrue := []string{"briefing: true", "loop_warning: true", "plan_checkpoint: true",
+		"rules_reminder: true", "skill_eval: true", "think_reminder: true", "timestamps: true"}
+	fdEnd := strings.Index(content[fdIdx:], "\n\n")
+	if fdEnd < 0 {
+		fdEnd = len(content) - fdIdx
+	}
+	fdBlock := content[fdIdx : fdIdx+fdEnd]
+	for _, want := range wantTrue {
+		if !strings.Contains(fdBlock, want) {
+			t.Errorf("feature_defaults block missing %q; got:\n%s", want, fdBlock)
+		}
+	}
+	if !strings.Contains(fdBlock, "assoc_context: false") {
+		t.Errorf("feature_defaults assoc_context should be false; got:\n%s", fdBlock)
+	}
+	if !strings.Contains(fdBlock, "think_reminder_min_chars: 0") {
+		t.Errorf("feature_defaults think_reminder_min_chars should be 0; got:\n%s", fdBlock)
+	}
+
+	// At least one key added (the new section).
+	if n == 0 {
+		t.Errorf("expected fields added for new feature_defaults section, got %d", n)
+	}
+
+	// Idempotency: second run adds 0.
+	n2, err := MigrateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 0 {
+		data2, _ := os.ReadFile(path)
+		t.Errorf("second MigrateConfig should be idempotent (0 added), got %d\ncontent after 2nd run:\n%s", n2, string(data2))
+	}
+}
+
+// TestMigrateConfig_TopLevelHeaderWithComment verifies that a model_features
+// header carrying an inline comment (e.g., "model_features: # gates") is
+// recognized. Previously the exact-match check silently skipped it, leaving
+// all model blocks unmigrated.
+func TestMigrateConfig_TopLevelHeaderWithComment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`proxy:
+  enabled: true
+  model_features: # per-model gates
+    claude:
+      skill_eval: true
+`), 0644)
+
+	n, err := MigrateConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+	if !strings.Contains(content, "loop_warning: true") {
+		t.Errorf("model_features with inline-comment header should still trigger migration, content:\n%s", content)
+	}
+	if n == 0 {
+		t.Errorf("expected migration to add keys under inline-comment top-level header, got n=%d", n)
 	}
 }

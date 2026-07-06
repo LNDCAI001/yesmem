@@ -116,14 +116,14 @@ func (h *Handler) relayAgentMessages() {
 		newCount, _ := h.store.AgentIncrementRelayCount(agent.ID)
 		log.Printf("[heartbeat] pinged agent %s (%s) for %d pending messages, total turns: %d", agent.ID, agent.Section, len(msgs), newCount)
 
-		// Enforce max_turns — freeze, don't kill
+		// Enforce max_turns — stop relaying once budget exhausted
 		maxTurns := h.agentMaxTurns
 		if maxTurns == 0 {
 			maxTurns = 30
 		}
 		if newCount >= maxTurns {
-			log.Printf("[heartbeat] agent %s reached max_turns (%d), freezing", agent.ID, maxTurns)
-			h.freezeAgent(agent.ID, fmt.Sprintf("max_turns %d reached", maxTurns))
+			log.Printf("[heartbeat] agent %s reached max_turns (%d), stopping", agent.ID, maxTurns)
+			h.stopAgent(agent.ID, fmt.Sprintf("max_turns %d reached", maxTurns))
 		}
 	}
 }
@@ -244,8 +244,8 @@ func (h *Handler) detectOrphanedAgents() {
 		if agent.Status != "running" || agent.CallerSession == "" {
 			continue
 		}
-		// Note: agents with status "frozen" are intentionally excluded.
-		// A frozen parent is paused, not dead — its children should not be orphaned.
+		// Note: agents with status "paused" are intentionally excluded.
+		// A paused parent is alive, not dead — its children should not be orphaned.
 		parent, err := h.store.AgentGetAnyBySession(agent.CallerSession)
 		if err != nil || parent == nil {
 			continue // user session or lookup error — skip
@@ -277,7 +277,7 @@ func (h *Handler) detectOrphanedAgents() {
 	}
 }
 
-// enforceAgentLimits checks running agents against configured limits and freezes violators.
+// enforceAgentLimits checks running agents against configured limits and stops violators.
 func (h *Handler) enforceAgentLimits() {
 	agents, err := h.store.AgentList("")
 	if err != nil {
@@ -291,7 +291,7 @@ func (h *Handler) enforceAgentLimits() {
 			continue
 		}
 
-		// Check runtime limit — but only freeze if the PID is actually dead.
+		// Check runtime limit — but only stop if the PID is actually dead.
 		// A live PID means the agent is working past its configured budget
 		// (e.g. long refactors); the hung-agent detector handles truly stuck
 		// processes via heartbeat_at staleness. See learning #73505.
@@ -300,8 +300,8 @@ func (h *Handler) enforceAgentLimits() {
 			if isPIDAlive(agent.PID) {
 				continue
 			}
-			log.Printf("[heartbeat] agent %s exceeded max_runtime (%v) and PID %d is dead, freezing", agent.ID, maxRuntime, agent.PID)
-			h.freezeAgent(agent.ID, fmt.Sprintf("max_runtime %v exceeded, PID dead", maxRuntime))
+			log.Printf("[heartbeat] agent %s exceeded max_runtime (%v) and PID %d is dead, stopping", agent.ID, maxRuntime, agent.PID)
+			h.stopAgent(agent.ID, fmt.Sprintf("max_runtime %v exceeded, PID dead", maxRuntime))
 			continue
 		}
 
@@ -309,19 +309,31 @@ func (h *Handler) enforceAgentLimits() {
 		if agent.TokenBudget > 0 {
 			total := agent.InputTokens + agent.OutputTokens
 			if total >= agent.TokenBudget {
-				log.Printf("[heartbeat] agent %s exceeded token_budget (%d/%d), freezing", agent.ID, total, agent.TokenBudget)
-				h.freezeAgent(agent.ID, fmt.Sprintf("token_budget %d exceeded (used %d)", agent.TokenBudget, total))
+				log.Printf("[heartbeat] agent %s exceeded token_budget (%d/%d), stopping", agent.ID, total, agent.TokenBudget)
+				h.stopAgent(agent.ID, fmt.Sprintf("token_budget %d exceeded (used %d)", agent.TokenBudget, total))
 			}
 		}
 	}
 }
 
-// freezeAgent stops relaying messages to an agent without killing it.
-// The agent process stays alive, messages queue up. Can be resumed via resume_agent.
-func (h *Handler) freezeAgent(id, reason string) {
+// stopAgent marks an agent as permanently stopped — process is dead or the
+// supervisor has given up (max_runtime + dead PID, token_budget exhausted,
+// max_restarts exceeded). Orchestrator must respawn to make progress.
+func (h *Handler) stopAgent(id, reason string) {
 	h.store.AgentUpdate(id, map[string]any{
-		"status":   "frozen",
-		"progress": "frozen: " + reason,
+		"status":     "stopped",
+		"stopped_at": time.Now().Format("2006-01-02 15:04:05"),
+		"progress":   "stopped: " + reason,
+	})
+}
+
+// pauseAgent marks an agent as waiting — process is alive, PTY bridge still
+// open, but supervisor needs orchestrator input (idle escalation, done-verify
+// pending). Orchestrator should relay_agent to nudge it forward.
+func (h *Handler) pauseAgent(id, reason string) {
+	h.store.AgentUpdate(id, map[string]any{
+		"status":   "paused",
+		"progress": "paused: " + reason,
 	})
 }
 
@@ -359,11 +371,8 @@ func (h *Handler) attemptRestart() {
 		// agent failed during spawn (bridge or terminal error in handler_agents.go)
 		// "permanent" restarts indefinitely — only "transient" is capped by MaxRestarts
 		if agent.RestartStrategy != "permanent" && agent.RestartCount >= agent.MaxRestarts {
-			log.Printf("[heartbeat] agent %s max_restarts %d exceeded, freezing", agent.ID, agent.MaxRestarts)
-			h.store.AgentUpdate(agent.ID, map[string]any{
-				"status":   "frozen",
-				"progress": fmt.Sprintf("max_restarts %d exceeded", agent.MaxRestarts),
-			})
+			log.Printf("[heartbeat] agent %s max_restarts %d exceeded, stopping", agent.ID, agent.MaxRestarts)
+			h.stopAgent(agent.ID, fmt.Sprintf("max_restarts %d exceeded", agent.MaxRestarts))
 			continue
 		}
 
@@ -489,12 +498,12 @@ func (h *Handler) detectHungAgents() {
 		staleness := time.Since(hbTime)
 		if staleness > hungAgentThreshold {
 			// A stale heartbeat alone is not "hung" — long bash calls block
-			// heartbeats while the agent keeps working. Only freeze if the
+			// heartbeats while the agent keeps working. Only stop if the
 			// PID is actually dead. See learning #73191.
 			if !isPIDAlive(agent.PID) {
 				reason := fmt.Sprintf("unresponsive: last heartbeat %s ago, PID dead", staleness.Round(time.Second))
-				log.Printf("[heartbeat] agent %s %s, freezing", agent.ID, reason)
-				h.freezeAgent(agent.ID, reason)
+				log.Printf("[heartbeat] agent %s %s, stopping", agent.ID, reason)
+				h.stopAgent(agent.ID, reason)
 			}
 		}
 	}
@@ -568,7 +577,7 @@ func (h *Handler) sendOrchestratorStatusPing() {
 
 // checkYesloopDoneGuard validates yesloop agent scratchpad sections for
 // DONE compliance. If an agent claims all 6 phases COMPLETE but the
-// phase blocks fail validation, the agent is frozen and the orchestrator
+// phase blocks fail validation, the agent is paused and the orchestrator
 // notified. Runs every ~30s from startAgentHeartbeat.
 func (h *Handler) checkYesloopDoneGuard() {
 	agents, err := h.store.AgentList("")
@@ -606,18 +615,18 @@ func (h *Handler) checkYesloopDoneGuard() {
 			continue // all phases valid, nothing to do
 		}
 
-		// DONE claimed but validation failed → freeze agent + notify orchestrator
+		// DONE claimed but validation failed → pause agent + notify orchestrator
 		log.Printf("[heartbeat] DONE-GUARD: agent %s (%s) claims DONE but phase validation FAILED:\n%s",
 			agent.ID, agent.Section, result.String())
 
-		h.freezeAgent(agent.ID, fmt.Sprintf("DONE-GUARD: phase validation failed — %s", summarizeErrors(result)))
+		h.pauseAgent(agent.ID, fmt.Sprintf("DONE-GUARD: phase validation failed — %s", summarizeErrors(result)))
 
 		if agent.CallerSession != "" {
 			h.Handle(Request{
 				Method: "send_to",
 				Params: map[string]any{
 					"target":   agent.CallerSession,
-					"content":  fmt.Sprintf("⛔ DONE-GUARD: Agent %s (%s) claims DONE but phase validation FAILED. Frozen.\n%s", agent.ID, agent.Section, result.String()),
+					"content":  fmt.Sprintf("⛔ DONE-GUARD: Agent %s (%s) claims DONE but phase validation FAILED. Paused.\n%s", agent.ID, agent.Section, result.String()),
 					"msg_type": "status",
 				},
 			})

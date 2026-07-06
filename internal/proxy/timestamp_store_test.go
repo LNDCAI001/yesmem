@@ -220,6 +220,38 @@ func TestBuildMeta_WithAllInjects(t *testing.T) {
 	}
 }
 
+func TestBuildMeta_WithLoopWarning(t *testing.T) {
+	meta := &TimestampMeta{
+		Timestamp:    "Di 2026-05-12 12:00:00",
+		Delta:        "5s",
+		LoopWarning:  "[YesMem Loop Detection] level 1: you are repeating the same Edit→Bash cycle.",
+	}
+	got := BuildMeta(7, meta)
+	want := "[Di 2026-05-12 12:00:00] [msg:7] [+5s]\n[loop-warning] [YesMem Loop Detection] level 1: you are repeating the same Edit→Bash cycle."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildMeta_LoopWarningAlongsideOtherInjects(t *testing.T) {
+	meta := &TimestampMeta{
+		Timestamp:     "Di 2026-05-12 12:00:00",
+		ThinkReminder: "Think!",
+		AssocContext:  "ctx",
+		LoopWarning:   "LOOP!",
+	}
+	got := BuildMeta(3, meta)
+	if !strings.Contains(got, "[think-reminder] Think!") {
+		t.Errorf("missing think-reminder in: %s", got)
+	}
+	if !strings.Contains(got, "[assoc-context] ctx") {
+		t.Errorf("missing assoc-context in: %s", got)
+	}
+	if !strings.Contains(got, "[loop-warning] LOOP!") {
+		t.Errorf("missing loop-warning in: %s", got)
+	}
+}
+
 func TestBuildMeta_TimestampHintOnMsg1(t *testing.T) {
 	meta := &TimestampMeta{Timestamp: "Di 2026-05-12 12:00:00"}
 	got := BuildMeta(1, meta)
@@ -258,6 +290,65 @@ func TestBuildMeta_SkillEvalPlainContentGetsPrefix(t *testing.T) {
 	got := BuildMeta(1, meta)
 	if !strings.Contains(got, "[skill-eval] check skills") {
 		t.Errorf("expected prefixed skill-eval, got: %s", got)
+	}
+}
+
+func TestBuildMeta_WithPlanCheckpoint(t *testing.T) {
+	meta := &TimestampMeta{
+		Timestamp:      "Sa 2026-07-04 12:00:00",
+		Delta:          "3s",
+		PlanCheckpoint: "[Plan Checkpoint]\nUpdate your plan.\n[/Plan Checkpoint]",
+	}
+	got := BuildMeta(7, meta)
+	want := "[Sa 2026-07-04 12:00:00] [msg:7] [+3s]\n[plan-checkpoint] [Plan Checkpoint]\nUpdate your plan.\n[/Plan Checkpoint]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildMeta_WithDocsHint(t *testing.T) {
+	meta := &TimestampMeta{
+		Timestamp: "Sa 2026-07-04 12:00:00",
+		DocsHint:  "Du hast 15 indexed docs verfügbar.",
+	}
+	got := BuildMeta(7, meta)
+	want := "[Sa 2026-07-04 12:00:00] [msg:7]\n[docs-hint] Du hast 15 indexed docs verfügbar."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildMeta_PlanCheckpointAlongsideOtherInjects(t *testing.T) {
+	meta := &TimestampMeta{
+		Timestamp:      "Sa 2026-07-04 12:00:00",
+		ThinkReminder:  "Think!",
+		PlanCheckpoint: "[Plan Checkpoint] Update[/Plan Checkpoint]",
+		LoopWarning:    "LOOP!",
+	}
+	got := BuildMeta(3, meta)
+	if !strings.Contains(got, "[think-reminder] Think!") {
+		t.Errorf("missing think-reminder in: %s", got)
+	}
+	if !strings.Contains(got, "[plan-checkpoint] [Plan Checkpoint]") {
+		t.Errorf("missing plan-checkpoint in: %s", got)
+	}
+	if !strings.Contains(got, "[loop-warning] LOOP!") {
+		t.Errorf("missing loop-warning in: %s", got)
+	}
+}
+
+func TestBuildMeta_DocsHintAlongsideOtherInjects(t *testing.T) {
+	meta := &TimestampMeta{
+		Timestamp:    "Sa 2026-07-04 12:00:00",
+		AssocContext: "ctx",
+		DocsHint:     "docs available",
+	}
+	got := BuildMeta(5, meta)
+	if !strings.Contains(got, "[assoc-context] ctx") {
+		t.Errorf("missing assoc-context in: %s", got)
+	}
+	if !strings.Contains(got, "[docs-hint] docs available") {
+		t.Errorf("missing docs-hint in: %s", got)
 	}
 }
 
@@ -373,6 +464,41 @@ func TestTimestampStore_StoreExtendedMeta(t *testing.T) {
 	}
 	if meta.Rules != "Rules!" {
 		t.Errorf("Rules: got %q", meta.Rules)
+	}
+}
+
+func TestTimestampStore_LoopWarningFreezeOnceReplay(t *testing.T) {
+	ts := NewTimestampStore()
+	warning1 := "[YesMem Loop Detection] level 1: Edit→Bash cycle."
+	ts.Store("t1", 10, &TimestampMeta{
+		Timestamp:   "Di 2026-05-12 12:00:00",
+		LoopWarning: warning1,
+	})
+
+	meta, ok := ts.Get("t1", 10)
+	if !ok {
+		t.Fatal("expected stored entry")
+	}
+	if meta.LoopWarning != warning1 {
+		t.Fatalf("LoopWarning round 1: got %q, want %q", meta.LoopWarning, warning1)
+	}
+	firstBuild := BuildMeta(10, meta)
+
+	// Simulate next turn: same msg:N is retrieved from store and rebuilt.
+	meta2, ok := ts.Get("t1", 10)
+	if !ok {
+		t.Fatal("expected entry on second Get")
+	}
+	if meta2.LoopWarning != warning1 {
+		t.Fatalf("LoopWarning round 2: got %q, want %q", meta2.LoopWarning, warning1)
+	}
+	secondBuild := BuildMeta(10, meta2)
+
+	if firstBuild != secondBuild {
+		t.Fatalf("freeze-once-replay broken: turn 1 != turn 2\nfirst:  %q\nsecond: %q", firstBuild, secondBuild)
+	}
+	if !strings.Contains(firstBuild, "[loop-warning] ") {
+		t.Fatalf("expected [loop-warning] prefix in replayed build: %q", firstBuild)
 	}
 }
 

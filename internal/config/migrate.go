@@ -54,44 +54,79 @@ const modelFeaturesBlock = `
   # Models not listed fall back to feature_defaults.
   #
   # Gate reference:
-  #   skill_eval      = Inject [skill-eval] block — checks which skills apply to the task
-  #   briefing        = Inject yesmem briefing at session start (learnings, recent sessions)
-  #   rules_reminder  = Periodic reminder of project rules/guidelines from CLAUDE.md/OPENCODE.md
-  #   plan_checkpoint = Inject plan checkpoint reminders during long implementation sessions
-  #   think_reminder       = Inject hybrid_search() hint (check memory before assuming)
+  #   skill_eval               = Inject [skill-eval] block — checks which skills apply
+  #   briefing                 = Inject yesmem briefing at session start
+  #   rules_reminder           = Periodic reminder of project rules/guidelines
+  #   plan_checkpoint          = Inject plan checkpoint reminders
+  #   think_reminder           = Inject hybrid_search() hint (check memory before assuming)
   #   think_reminder_min_chars = Min user text length to trigger reminder (0=always)
+  #   timestamps               = Inject [HH:MM:SS] [msg:N] [+Δ] markers
+  #   assoc_context            = Inject [assoc-context] from hybrid_search (frozen per msg:N)
+  #   loop_warning             = Inject [loop-warning] when loop detection fires
   model_features:
     claude:
-      skill_eval: true
+      assoc_context: true
       briefing: true
-      rules_reminder: true
+      loop_warning: true
       plan_checkpoint: true
+      rules_reminder: true
+      skill_eval: true
       think_reminder: true
+      think_reminder_min_chars: 0
+      timestamps: false
     deepseek:
-      skill_eval: true
+      assoc_context: true
       briefing: true
+      loop_warning: true
+      plan_checkpoint: false
+      rules_reminder: true
+      skill_eval: true
       think_reminder: true
-      think_reminder_min_chars: 10
+      think_reminder_min_chars: 0
+      timestamps: true
+    glm:
+      assoc_context: true
+      briefing: true
+      loop_warning: true
+      plan_checkpoint: false
       rules_reminder: true
+      skill_eval: true
+      think_reminder: true
+      think_reminder_min_chars: 0
+      timestamps: true
     gpt:
-      skill_eval: true
+      assoc_context: true
       briefing: true
-      think_reminder: false
+      loop_warning: true
+      plan_checkpoint: false
       rules_reminder: true
+      skill_eval: true
+      think_reminder: false
+      think_reminder_min_chars: 0
+      timestamps: false
     openai:
-      skill_eval: true
+      assoc_context: true
       briefing: true
-      think_reminder: false
+      loop_warning: true
+      plan_checkpoint: false
       rules_reminder: true
+      skill_eval: true
+      think_reminder: false
+      think_reminder_min_chars: 0
+      timestamps: false
 
   feature_defaults:
     # Fallback for models not listed above.
-    # Defaults: all on — new models get full features until proven otherwise.
-    skill_eval: true
+    # Most features on; assoc_context off by default (injection quality varies per model).
+    assoc_context: false
     briefing: true
-    rules_reminder: true
+    loop_warning: true
     plan_checkpoint: true
+    rules_reminder: true
+    skill_eval: true
     think_reminder: true
+    think_reminder_min_chars: 0
+    timestamps: true
 `
 
 const deepseekPricingSnippet = `
@@ -285,6 +320,10 @@ http:
 		}
 	}
 
+	// ━━ Per-key gate migration: fill missing gate keys in existing model_features entries and feature_defaults ━━
+	content, gatesAdded := migrateModelFeaturesGates(content)
+	added += gatesAdded
+
 	if added == 0 {
 		return 0, nil
 	}
@@ -383,4 +422,258 @@ func injectThinkReminderMinChars(content, targetSection, value string) string {
 	newLine := thinkIndent + "think_reminder_min_chars: " + value
 	lines = append(lines[:lastThinkLine+1], append([]string{newLine}, lines[lastThinkLine+1:]...)...)
 	return strings.Join(lines, "\n")
+}
+
+// gateDefaults defines the value injected for each missing gate key during
+// per-key migration of existing model_features entries and feature_defaults.
+// loop_warning=true is the single exception: loop detection ran ungated before
+// the gate existed, so false would regress effective behavior. All other gates
+// default to false (the plain-bool zero value, made explicit).
+var gateDefaults = map[string]string{
+	"assoc_context":            "false",
+	"briefing":                 "false",
+	"loop_warning":             "true",
+	"plan_checkpoint":          "false",
+	"rules_reminder":           "false",
+	"skill_eval":               "false",
+	"think_reminder":           "false",
+	"think_reminder_min_chars": "0",
+	"timestamps":               "false",
+}
+
+// canonicalGateOrder is the insertion order for missing gate keys (alphabetical).
+var canonicalGateOrder = []string{
+	"assoc_context",
+	"briefing",
+	"loop_warning",
+	"plan_checkpoint",
+	"rules_reminder",
+	"skill_eval",
+	"think_reminder",
+	"think_reminder_min_chars",
+	"timestamps",
+}
+
+// injectMissingGates scans a YAML sub-section named by sectionHeader (e.g.,
+// "claude:") and appends any missing gate keys at the section's key indent.
+// Returns the modified content and the number of keys added. Idempotent.
+//
+// Key indent is auto-detected from the first existing key in the section;
+// falls back to sectionIndent+2 for empty sections. Missing keys are appended
+// at the section end (before any sibling that dedents to or past sectionIndent).
+func injectMissingGates(content, sectionHeader string) (string, int) {
+	lines := strings.Split(content, "\n")
+	inSection := false
+	sectionIndent := -1
+	keyIndent := ""
+	insertAt := -1
+	existing := map[string]bool{}
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inSection {
+			// Section header match tolerates inline comments (e.g., "claude: # preset").
+			// The YAML key is the token before the first colon; trailing comment is ignored.
+			if key := strings.SplitN(trimmed, ":", 2); len(key) == 2 && key[0]+":" == sectionHeader {
+				rest := strings.TrimSpace(key[1])
+				if rest == "" || strings.HasPrefix(rest, "#") {
+					inSection = true
+					sectionIndent = len(line) - len(strings.TrimLeft(line, " \t"))
+					insertAt = i + 1
+				}
+			}
+			continue
+		}
+		if len(trimmed) == 0 || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := 0
+		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			indent = len(line) - len(strings.TrimLeft(line, " \t"))
+		}
+		if indent <= sectionIndent {
+			break
+		}
+		existing[strings.SplitN(trimmed, ":", 2)[0]] = true
+		if keyIndent == "" {
+			keyIndent = line[:indent]
+		}
+		insertAt = i + 1
+	}
+
+	if !inSection {
+		return content, 0
+	}
+	if keyIndent == "" {
+		keyIndent = strings.Repeat(" ", sectionIndent+2)
+	}
+
+	var toInsert []string
+	for _, key := range canonicalGateOrder {
+		if !existing[key] {
+			toInsert = append(toInsert, keyIndent+key+": "+gateDefaults[key])
+		}
+	}
+	if len(toInsert) == 0 {
+		return content, 0
+	}
+
+	newLines := append(append([]string{}, lines[:insertAt]...), toInsert...)
+	newLines = append(newLines, lines[insertAt:]...)
+	return strings.Join(newLines, "\n"), len(toInsert)
+}
+
+// migrateModelFeaturesGates scans an existing model_features block plus the
+// feature_defaults sibling and adds missing gate keys to each entry. Returns
+// the modified content and the total number of keys added. Idempotent.
+//
+// Model entries are discovered dynamically (any sub-section header at indent
+// == model_features+2 is processed), so custom model names in user configs
+// also receive per-key migration. New model entries (e.g., glm) are NOT
+// inserted — only existing entries are augmented; missing models fall back
+// to feature_defaults at runtime.
+func migrateModelFeaturesGates(content string) (string, int) {
+	var headers []string
+
+	lines := strings.Split(content, "\n")
+	mfLine := -1
+	mfIndent := -1
+	for i, line := range lines {
+		// Top-level header match tolerates inline comments (e.g., "model_features: # gates").
+		// Inline values like "model_features: {}" are NOT section headers.
+		trimmed := strings.TrimSpace(line)
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) == 2 && parts[0]+":" == "model_features:" {
+			rest := strings.TrimSpace(parts[1])
+			if rest == "" || strings.HasPrefix(rest, "#") {
+				mfLine = i
+				mfIndent = len(line) - len(strings.TrimLeft(line, " \t"))
+				break
+			}
+		}
+	}
+
+	if mfLine >= 0 {
+		subIndent := mfIndent + 2
+		for i := mfLine + 1; i < len(lines); i++ {
+			line := lines[i]
+			trimmed := strings.TrimSpace(line)
+			if len(trimmed) == 0 || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			indent := len(line) - len(strings.TrimLeft(line, " \t"))
+			if indent <= mfIndent {
+				break
+			}
+			if indent == subIndent {
+				// Sub-section header: "<name>:" optionally followed by inline comment.
+				// Inline values like "deepseek: {}" are NOT section headers.
+				parts := strings.SplitN(trimmed, ":", 2)
+				if len(parts) == 2 {
+					rest := strings.TrimSpace(parts[1])
+					if rest == "" || strings.HasPrefix(rest, "#") {
+						headers = append(headers, parts[0]+":")
+					}
+				}
+			}
+		}
+	}
+
+	// feature_defaults is a sibling of model_features, not nested.
+	// If missing entirely, insert the full section with documented template
+	// values before per-key migration runs. Rationale: a missing section
+	// previously meant code-false fallback; a newly created visible section
+	// should carry the documented defaults so ungated features (loop_warning)
+	// don't regress. The template matches modelFeaturesBlock.feature_defaults.
+	total := 0
+	if !sectionExists(content, "feature_defaults:") {
+		content = insertFeatureDefaultsSection(content)
+		total += len(canonicalGateOrder)
+	}
+
+	headers = append(headers, "feature_defaults:")
+
+	for _, h := range headers {
+		var added int
+		content, added = injectMissingGates(content, h)
+		total += added
+	}
+	return content, total
+}
+
+// sectionExists reports whether a YAML sub-section header (e.g., "feature_defaults:")
+// appears as a line, tolerant of inline comments ("feature_defaults: # fallback").
+// Inline values ("feature_defaults: {}") are NOT treated as section headers.
+func sectionExists(content, sectionHeader string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) != 2 || parts[0]+":" != sectionHeader {
+			continue
+		}
+		rest := strings.TrimSpace(parts[1])
+		if rest == "" || strings.HasPrefix(rest, "#") {
+			return true
+		}
+	}
+	return false
+}
+
+// insertFeatureDefaultsSection inserts a full feature_defaults block with
+// documented template values (NOT gateDefaults-false values) immediately after
+// the model_features section ends. Indent mirrors the model_features header.
+// If model_features is absent, the block is appended at content end as a
+// sibling of the proxy section.
+func insertFeatureDefaultsSection(content string) string {
+	lines := strings.Split(content, "\n")
+	mfLine := -1
+	mfIndent := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) == 2 && parts[0]+":" == "model_features:" {
+			rest := strings.TrimSpace(parts[1])
+			if rest == "" || strings.HasPrefix(rest, "#") {
+				mfLine = i
+				mfIndent = len(line) - len(strings.TrimLeft(line, " \t"))
+				break
+			}
+		}
+	}
+
+	block := strings.Repeat(" ", mfIndent) + "feature_defaults:\n" +
+		strings.Repeat(" ", mfIndent+2) + "assoc_context: false\n" +
+		strings.Repeat(" ", mfIndent+2) + "briefing: true\n" +
+		strings.Repeat(" ", mfIndent+2) + "loop_warning: true\n" +
+		strings.Repeat(" ", mfIndent+2) + "plan_checkpoint: true\n" +
+		strings.Repeat(" ", mfIndent+2) + "rules_reminder: true\n" +
+		strings.Repeat(" ", mfIndent+2) + "skill_eval: true\n" +
+		strings.Repeat(" ", mfIndent+2) + "think_reminder: true\n" +
+		strings.Repeat(" ", mfIndent+2) + "think_reminder_min_chars: 0\n" +
+		strings.Repeat(" ", mfIndent+2) + "timestamps: true"
+
+	if mfLine < 0 {
+		if len(lines) > 0 && lines[len(lines)-1] != "" {
+			return content + "\n" + block
+		}
+		return content + block
+	}
+
+	insertAt := len(lines)
+	for i := mfLine + 1; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) == 0 || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if indent <= mfIndent {
+			insertAt = i
+			break
+		}
+	}
+
+	newLines := append(append([]string{}, lines[:insertAt]...), block)
+	newLines = append(newLines, lines[insertAt:]...)
+	return strings.Join(newLines, "\n")
 }

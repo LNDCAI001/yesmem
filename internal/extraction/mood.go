@@ -7,6 +7,8 @@ import (
 
 const moodPrompt = `Analyze the communication dynamics of these recent user messages.
 
+LANGUAGE: Always write responses in English. Technical tokens (JSON field names) remain verbatim — never translate them.
+
 Mood types:
 - relaxed_exploratory: Relaxed, open to discussion
 - focused_productive: In the flow, knows what they want

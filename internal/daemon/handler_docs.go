@@ -224,8 +224,8 @@ func mergeDocResults(bm25, vector []storage.DocChunkResult, limit int) []storage
 	return results
 }
 
-// handleListDocSources lists all registered doc sources.
-func (h *Handler) handleListDocSources(params map[string]any) Response {
+// handleListDocs lists all registered doc sources.
+func (h *Handler) handleListDocs(params map[string]any) Response {
 	project := stringOr(params, "project", "")
 	sources, err := h.store.ListDocSources(project)
 	if err != nil {

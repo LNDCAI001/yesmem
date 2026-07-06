@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"testing"
+
+	"github.com/carsteneu/yesmem/internal/models"
 )
 
 func TestHandle_Ping(t *testing.T) {
@@ -181,5 +183,71 @@ func TestIntOr(t *testing.T) {
 	}
 	if intOr(params, "missing", 10) != 10 {
 		t.Error("expected default 10")
+	}
+}
+
+// A cwd-dependent ambiguity resolution must not poison the short-name cache:
+// a later caller whose cwd matches one candidate must still get the
+// tiebreaker resolution, not the first caller's cached fallback.
+func TestResolveProjectParam_CwdErrorNotCached(t *testing.T) {
+	h, store := mustHandler(t)
+
+	// Two projects sharing the basename "dupname" — real fullpath data shape.
+	for _, p := range []string{"/tmp/a/dupname", "/tmp/b/dupname"} {
+		if err := store.UpsertSession(&models.Session{ID: "sess-" + p, Project: p}); err != nil {
+			t.Fatalf("seed session: %v", err)
+		}
+	}
+
+	// First caller stands outside both candidates → falls back to first candidate
+	// (post-fix behavior: previously hard-error, now first-match with warning log).
+	// Resolution is cwd-dependent, so it must NOT be cached.
+	params := map[string]any{"project": "dupname", "_cwd": "/somewhere/else"}
+	resolved := h.resolveProjectParam(params)
+	if resolved["project"] != "/tmp/a/dupname" {
+		t.Fatalf("expected cwd-unresolved ambiguous short name to fall back to first candidate /tmp/a/dupname, got project=%v err=%v", resolved["project"], resolved["_project_error"])
+	}
+
+	// Second caller stands inside one candidate → cwd tiebreaker must win.
+	params = map[string]any{"project": "dupname", "_cwd": "/tmp/a/dupname"}
+	resolved = h.resolveProjectParam(params)
+	if errMsg, ok := resolved["_project_error"]; ok {
+		t.Fatalf("expected no error for cwd-matching caller, got: %v", errMsg)
+	}
+	if resolved["project"] != "/tmp/a/dupname" {
+		t.Errorf("expected cwd tiebreaker to resolve to /tmp/a/dupname, got %q", resolved["project"])
+	}
+}
+
+// TestResolveProjectParam_AmbiguousFallbackNotCachedWhenCwdMissing covers the
+// cache-poisoning regression found in cold review: a caller with no cwd that hits
+// the ambiguous fallback must NOT cache the result, because a subsequent caller
+// with a cwd matching a different candidate would otherwise receive the wrong
+// resolution. Before the fix, the plain string /tmp/a/dupname was cached and the
+// cwd-tiebreaker for caller-2 never ran.
+func TestResolveProjectParam_AmbiguousFallbackNotCachedWhenCwdMissing(t *testing.T) {
+	h, store := mustHandler(t)
+
+	for _, p := range []string{"/tmp/a/dupname", "/tmp/b/dupname"} {
+		if err := store.UpsertSession(&models.Session{ID: "sess-" + p, Project: p}); err != nil {
+			t.Fatalf("seed session: %v", err)
+		}
+	}
+
+	// Caller 1: cwd missing → ambiguity fallback returns /tmp/a/dupname. Must NOT cache.
+	params := map[string]any{"project": "dupname"} // no _cwd
+	resolved := h.resolveProjectParam(params)
+	if resolved["project"] != "/tmp/a/dupname" {
+		t.Fatalf("caller 1: expected /tmp/a/dupname, got %v (err=%v)", resolved["project"], resolved["_project_error"])
+	}
+
+	// Caller 2: cwd inside /tmp/b/dupname → tiebreaker must win, NOT serve cached /tmp/a/dupname.
+	params = map[string]any{"project": "dupname", "_cwd": "/tmp/b/dupname"}
+	resolved = h.resolveProjectParam(params)
+	if errMsg, ok := resolved["_project_error"]; ok {
+		t.Fatalf("caller 2: expected no error, got: %v", errMsg)
+	}
+	if resolved["project"] != "/tmp/b/dupname" {
+		t.Errorf("caller 2: cache-poisoning regression — expected /tmp/b/dupname via cwd tiebreaker, got cached %q", resolved["project"])
 	}
 }

@@ -1311,6 +1311,7 @@ proxy:
   feature_defaults:
     assoc_context: false
     briefing: true
+    loop_warning: true
     plan_checkpoint: true
     rules_reminder: true
     skill_eval: true
@@ -1322,6 +1323,7 @@ proxy:
     claude:
       assoc_context: true
       briefing: true
+      loop_warning: true
       plan_checkpoint: true
       rules_reminder: true
       skill_eval: true
@@ -1331,6 +1333,17 @@ proxy:
     deepseek:
       assoc_context: true
       briefing: true
+      loop_warning: true
+      plan_checkpoint: false
+      rules_reminder: true
+      skill_eval: true
+      think_reminder: true
+      think_reminder_min_chars: 0
+      timestamps: true
+    glm:
+      assoc_context: true
+      briefing: true
+      loop_warning: true
       plan_checkpoint: false
       rules_reminder: true
       skill_eval: true
@@ -1340,6 +1353,7 @@ proxy:
     gpt:
       assoc_context: true
       briefing: true
+      loop_warning: true
       plan_checkpoint: false
       rules_reminder: true
       skill_eval: true
@@ -1349,6 +1363,7 @@ proxy:
     openai:
       assoc_context: true
       briefing: true
+      loop_warning: true
       plan_checkpoint: false
       rules_reminder: true
       skill_eval: true

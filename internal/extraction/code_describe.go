@@ -39,6 +39,8 @@ var packageDescriptionSchema = map[string]any{
 
 const codeDescribeSystemPrompt = `You are a code documentation expert. Given a Go package's structure (files, function signatures, imports, and known issues), write a concise description.
 
+LANGUAGE: Always write responses in English. Technical tokens (function names, types, identifiers) remain verbatim — never translate them.
+
 Rules:
 - Description: 2-3 sentences. What does the package do? When does it run? What are its key dependencies?
 - Anti-patterns: 0-3 convention hints for developers. Only include if there's a clear pattern. Format: "→ <rule>"

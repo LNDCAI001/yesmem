@@ -362,6 +362,7 @@ func testDB(t *testing.T) *sql.DB {
 		content TEXT NOT NULL DEFAULT '',
 		category TEXT NOT NULL DEFAULT '',
 		project TEXT NOT NULL DEFAULT '',
+		canonical_project TEXT NOT NULL DEFAULT '',
 		embedding_vector BLOB,
 		embedding_status TEXT,
 		superseded_by INTEGER,
@@ -403,5 +404,130 @@ func TestVectorStoreSearchAllowedLargeSet(t *testing.T) {
 		if r.ID == "2" {
 			t.Errorf("doc 2 must not appear, not in allowed set")
 		}
+	}
+}
+
+// TestVectorStoreSearchWithProject_FullPathAgainstShort verifies the regression fix:
+// when a caller passes project="/home/user/memory/yesmem" but learnings carry
+// project="yesmem" (legacy) or canonical_project="yesmem", the vector search
+// must still return matches. Before the fix bruteForceScan filtered via
+// `WHERE project = ?` and excluded everything.
+func TestVectorStoreSearchWithProject_FullPathAgainstShort(t *testing.T) {
+	db := testDB(t)
+	store, err := NewVectorStore(db, 384)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	ctx := context.Background()
+
+	db.Exec(`INSERT INTO learnings(id, content, category, project, canonical_project)
+		VALUES (1, 'vector project filter regression doc', 'test', 'yesmem', 'yesmem')`)
+	store.Add(ctx, VectorDoc{ID: "1", Embedding: makeVec(384, 0.5)})
+
+	results, err := store.SearchWithProject(ctx, makeVec(384, 0.5), 5, "/home/user/memory/yesmem")
+	if err != nil {
+		t.Fatalf("SearchWithProject: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected vector hit with full-path project filter against short stored canonical; got 0 (regression)")
+	}
+}
+
+// TestVectorStoreSearchWithProject_WorktreeAgainstShort covers the worktree case:
+// project passed as a .worktrees/ path must match a learning stored with the
+// parent repo's short canonical name.
+func TestVectorStoreSearchWithProject_WorktreeAgainstShort(t *testing.T) {
+	db := testDB(t)
+	store, err := NewVectorStore(db, 384)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	ctx := context.Background()
+
+	db.Exec(`INSERT INTO learnings(id, content, category, project, canonical_project)
+		VALUES (1, 'worktree project filter vector match', 'test', 'yesmem', 'yesmem')`)
+	store.Add(ctx, VectorDoc{ID: "1", Embedding: makeVec(384, 0.5)})
+
+	results, err := store.SearchWithProject(ctx, makeVec(384, 0.5), 5, "/home/user/memory/yesmem/.worktrees/foo")
+	if err != nil {
+		t.Fatalf("SearchWithProject: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected vector hit with worktree project filter; got 0")
+	}
+}
+
+// TestVectorStoreSearchWithProject_NoMatchFiltered confirms unrelated projects
+// are still excluded (no false positives from tolerance).
+func TestVectorStoreSearchWithProject_NoMatchFiltered(t *testing.T) {
+	db := testDB(t)
+	store, err := NewVectorStore(db, 384)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	ctx := context.Background()
+
+	db.Exec(`INSERT INTO learnings(id, content, category, project, canonical_project)
+		VALUES (1, 'unrelated project vector must filter out', 'test', 'yesmem', 'yesmem')`)
+	store.Add(ctx, VectorDoc{ID: "1", Embedding: makeVec(384, 0.5)})
+
+	results, err := store.SearchWithProject(ctx, makeVec(384, 0.5), 5, "/home/user/projects/other")
+	if err != nil {
+		t.Fatalf("SearchWithProject: %v", err)
+	}
+	for _, r := range results {
+		if r.ID == "1" {
+			t.Fatalf("expected unrelated project to be filtered, got result from yesmem: %+v", r)
+		}
+	}
+}
+
+// TestVectorStoreSearchWithProject_SameBasenameDifferentParentNotMatch is the collision
+// guard for the vector path: /home/a/foo and /home/b/foo share basename "foo" but must
+// NOT match each other. Without the both-abs short-circuit in projectMatchesTolerant,
+// a caller from /home/b/foo would receive vectors from /home/a/foo.
+func TestVectorStoreSearchWithProject_SameBasenameDifferentParentNotMatch(t *testing.T) {
+	db := testDB(t)
+	store, err := NewVectorStore(db, 384)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	ctx := context.Background()
+
+	db.Exec(`INSERT INTO learnings(id, content, category, project, canonical_project)
+		VALUES (1, 'same basename vector collision guard', 'test', '/home/user/projects/foo', '/home/user/projects/foo')`)
+	store.Add(ctx, VectorDoc{ID: "1", Embedding: makeVec(384, 0.5)})
+
+	results, err := store.SearchWithProject(ctx, makeVec(384, 0.5), 5, "/home/user/memory/foo")
+	if err != nil {
+		t.Fatalf("SearchWithProject: %v", err)
+	}
+	for _, r := range results {
+		if r.ID == "1" {
+			t.Fatalf("expected /home/user/projects/foo vector NOT to match caller /home/user/memory/foo (same basename, different repo); got result: %+v", r)
+		}
+	}
+}
+
+// TestVectorStoreSearchWithProject_LegacyEmptyProjectMatches verifies that legacy rows
+// (empty project/canonical_project) remain discoverable through the vector path.
+func TestVectorStoreSearchWithProject_LegacyEmptyProjectMatches(t *testing.T) {
+	db := testDB(t)
+	store, err := NewVectorStore(db, 384)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	ctx := context.Background()
+
+	db.Exec(`INSERT INTO learnings(id, content, category, project, canonical_project)
+		VALUES (1, 'legacy vector row with empty project metadata', 'test', '', '')`)
+	store.Add(ctx, VectorDoc{ID: "1", Embedding: makeVec(384, 0.5)})
+
+	results, err := store.SearchWithProject(ctx, makeVec(384, 0.5), 5, "/home/user/memory/yesmem")
+	if err != nil {
+		t.Fatalf("SearchWithProject: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected legacy vector row (empty project) to remain discoverable; got 0")
 	}
 }

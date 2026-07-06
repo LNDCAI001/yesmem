@@ -163,7 +163,7 @@ func (s *Store) AgentGetActiveBySection(project, section string) (*Agent, error)
 	return s.scanAgent(s.readerDB().QueryRow(
 		`SELECT id, project, section, session_id, pid, sock_path, status, caller_session, error, heartbeat_at, progress, relay_count, depth, token_budget, retry_count, COALESCE(backend, 'claude') as backend, COALESCE(turns_used, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), COALESCE(last_activity_at, ''), COALESCE(phase, 'idle'), created_at, stopped_at, restart_strategy, restart_count, max_restarts, liveness_ping_at, last_restart_at, COALESCE(proxy_thread_id, ''), COALESCE(codex_session_id, ''), COALESCE(opencode_session_id, '')
 		FROM agents
-		WHERE project = ? AND section = ? AND status IN ('running', 'pending', 'spawning', 'frozen')
+		WHERE project = ? AND section = ? AND status IN ('running', 'pending', 'spawning', 'paused', 'frozen')
 		ORDER BY created_at DESC LIMIT 1`, project, section))
 }
 
@@ -230,19 +230,55 @@ func (s *Store) AgentIncrementRelayCount(id string) (int, error) {
 	return count, err
 }
 
-// AgentGetBySession returns the agent for a given session ID.
+// stripAgentPrefix removes the "opencode:" / "codex:" prefix that the MCP
+// layer (resolveClientSessionID in internal/mcp/server.go) and the proxy
+// persist (active_session_opencode). The agents table stores bare ids in
+// opencode_session_id / codex_session_id, so any caller-side prefixed value
+// must be stripped here at the storage boundary.
+func stripAgentPrefix(sid string) string {
+	if s, ok := strings.CutPrefix(sid, "opencode:"); ok {
+		return s
+	}
+	if s, ok := strings.CutPrefix(sid, "codex:"); ok {
+		return s
+	}
+	return sid
+}
+
+// AgentGetBySession returns the running agent for a given session ID.
+// Matches session_id OR opencode_session_id OR codex_session_id so spawned
+// non-claude agents (synthetic session_id, real backend id in the dedicated
+// columns) are resolvable. The sessionID parameter may carry an
+// "opencode:"/"codex:" prefix (as attached by the MCP layer and proxy); the
+// prefix is stripped here so callers do not need to know the storage layout.
 func (s *Store) AgentGetBySession(sessionID string) (*Agent, error) {
+	lookupID := stripAgentPrefix(sessionID)
 	return s.scanAgent(s.readerDB().QueryRow(
 		`SELECT id, project, section, session_id, pid, sock_path, status, caller_session, error, heartbeat_at, progress, relay_count, depth, token_budget, retry_count, COALESCE(backend, 'claude') as backend, COALESCE(turns_used, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), COALESCE(last_activity_at, ''), COALESCE(phase, 'idle'), created_at, stopped_at, restart_strategy, restart_count, max_restarts, liveness_ping_at, last_restart_at, COALESCE(proxy_thread_id, ''), COALESCE(codex_session_id, ''), COALESCE(opencode_session_id, '')
-		FROM agents WHERE session_id = ? AND status = 'running' LIMIT 1`, sessionID))
+		FROM agents WHERE (session_id = ? OR (opencode_session_id != '' AND opencode_session_id = ?) OR (codex_session_id != '' AND codex_session_id = ?)) AND status = 'running' ORDER BY created_at DESC LIMIT 1`, lookupID, lookupID, lookupID))
 }
 
 // AgentGetAnyBySession returns the most recent agent for a given session ID,
-// regardless of status. Useful for resume flows that need stopped agents.
+// regardless of status. Matches session_id OR opencode_session_id OR
+// codex_session_id and tolerates "opencode:"/"codex:" prefixes — see
+// AgentGetBySession rationale.
 func (s *Store) AgentGetAnyBySession(sessionID string) (*Agent, error) {
+	lookupID := stripAgentPrefix(sessionID)
 	return s.scanAgent(s.readerDB().QueryRow(
 		`SELECT id, project, section, session_id, pid, sock_path, status, caller_session, error, heartbeat_at, progress, relay_count, depth, token_budget, retry_count, COALESCE(backend, 'claude') as backend, COALESCE(turns_used, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), COALESCE(last_activity_at, ''), COALESCE(phase, 'idle'), created_at, stopped_at, restart_strategy, restart_count, max_restarts, liveness_ping_at, last_restart_at, COALESCE(proxy_thread_id, ''), COALESCE(codex_session_id, ''), COALESCE(opencode_session_id, '')
-		FROM agents WHERE session_id = ? ORDER BY created_at DESC LIMIT 1`, sessionID))
+		FROM agents WHERE session_id = ? OR (opencode_session_id != '' AND opencode_session_id = ?) OR (codex_session_id != '' AND codex_session_id = ?) ORDER BY created_at DESC LIMIT 1`, lookupID, lookupID, lookupID))
+}
+
+// AgentGetByPID returns the running agent whose spawned backend PID matches.
+// Used by resolveSessionID's _caller_pid fallback: the MCP wrapper sends
+// os.Getppid() (= backend PID) with every request, and agents.pid stores
+// bridge.Cmd.Process.Pid which is exactly that backend's PID. Restricted to
+// status='running' so PIDs cannot be reused by the OS to resurrect a stale
+// mapping after an agent process exits.
+func (s *Store) AgentGetByPID(pid int) (*Agent, error) {
+	return s.scanAgent(s.readerDB().QueryRow(
+		`SELECT id, project, section, session_id, pid, sock_path, status, caller_session, error, heartbeat_at, progress, relay_count, depth, token_budget, retry_count, COALESCE(backend, 'claude') as backend, COALESCE(turns_used, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), COALESCE(last_activity_at, ''), COALESCE(phase, 'idle'), created_at, stopped_at, restart_strategy, restart_count, max_restarts, liveness_ping_at, last_restart_at, COALESCE(proxy_thread_id, ''), COALESCE(codex_session_id, ''), COALESCE(opencode_session_id, '')
+		FROM agents WHERE pid = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1`, pid))
 }
 
 // AgentGetByProxyThreadID returns the most recent running agent whose proxy_thread_id matches.
@@ -387,11 +423,11 @@ func (s *Store) AgentCascadeStop(parentSessionID string) (int, error) {
 				continue
 			}
 			visited[a.SessionID] = true
-			if a.Status == "running" || a.Status == "frozen" || a.Status == "spawning" || a.Status == "pending" {
-				if err := s.AgentUpdate(a.ID, map[string]any{"status": "stopped"}); err == nil {
-					stopped++
-				}
+		if a.Status == "running" || a.Status == "paused" || a.Status == "spawning" || a.Status == "pending" {
+			if err := s.AgentUpdate(a.ID, map[string]any{"status": "stopped"}); err == nil {
+				stopped++
 			}
+		}
 			queue = append(queue, a.SessionID)
 		}
 	}
@@ -429,6 +465,7 @@ func (s *Store) scanAgent(row *sql.Row) (*Agent, error) {
 	a.ProxyThreadID = proxyThreadID.String
 	a.CodexSessionID = codexSessionID.String
 	a.OpencodeSessionID = opencodeSessionID.String
+	a.Status = normalizeAgentStatus(a.Status)
 	return a, nil
 }
 
@@ -463,6 +500,19 @@ func (s *Store) scanAgentRow(rows *sql.Rows) (Agent, error) {
 	a.ProxyThreadID = proxyThreadID.String
 	a.CodexSessionID = codexSessionID.String
 	a.OpencodeSessionID = opencodeSessionID.String
+	a.Status = normalizeAgentStatus(a.Status)
 	return a, nil
+}
+
+// normalizeAgentStatus translates the legacy "frozen" status to "paused" on read.
+// "frozen" was split into "paused" (process alive, waiting) and "stopped"
+// (process dead/permanently failed). Old DB rows that still carry "frozen" are
+// conservatively treated as "paused" — better to allow relay on an uncertain
+// row than to wrongly declare an agent dead.
+func normalizeAgentStatus(s string) string {
+	if s == "frozen" {
+		return "paused"
+	}
+	return s
 }
 

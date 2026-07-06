@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -389,9 +391,9 @@ func TestHandleRelayAgent_AgentNotRunning(t *testing.T) {
 
 	resp := h.handleRelayAgent(map[string]any{"to": "agent-1", "content": "hello"})
 	if resp.Error == "" {
-		t.Fatal("expected error for non-running agent")
+		t.Fatal("expected error for stopped agent")
 	}
-	if !strings.Contains(resp.Error, "not running") {
+	if !strings.Contains(resp.Error, "stopped") {
 		t.Errorf("unexpected error text: %s", resp.Error)
 	}
 }
@@ -499,7 +501,7 @@ func TestHandleStopAgent_Success(t *testing.T) {
 }
 
 func TestHandleStopAgent_StoppableStatuses(t *testing.T) {
-	for _, status := range []string{"running", "frozen", "spawning"} {
+	for _, status := range []string{"running", "paused", "spawning"} {
 		t.Run(status, func(t *testing.T) {
 			h, s := mustHandler(t)
 
@@ -608,7 +610,7 @@ func TestHandleStopAllAgents_MixedStatuses(t *testing.T) {
 	h, s := mustHandler(t)
 
 	s.AgentCreate(storage.Agent{ID: "a1", Project: "proj", Section: "s1", Status: "running", Backend: "claude"})
-	s.AgentCreate(storage.Agent{ID: "a2", Project: "proj", Section: "s2", Status: "frozen", Backend: "claude"})
+	s.AgentCreate(storage.Agent{ID: "a2", Project: "proj", Section: "s2", Status: "paused", Backend: "claude"})
 	s.AgentCreate(storage.Agent{ID: "a3", Project: "proj", Section: "s3", Status: "spawning", Backend: "claude"})
 	s.AgentCreate(storage.Agent{ID: "a4", Project: "proj", Section: "s4", Status: "stopped", Backend: "claude"})
 	s.AgentCreate(storage.Agent{ID: "a5", Project: "proj", Section: "s5", Status: "error", Backend: "claude"})
@@ -621,7 +623,7 @@ func TestHandleStopAllAgents_MixedStatuses(t *testing.T) {
 	m := resultMap(t, resp)
 	stopped, _ := m["stopped"].(float64)
 	if stopped != 3 {
-		t.Errorf("stopped = %v, want 3 (running+frozen+spawning)", stopped)
+		t.Errorf("stopped = %v, want 3 (running+paused+spawning)", stopped)
 	}
 }
 
@@ -728,13 +730,13 @@ func TestHandleResumeAgent_Success(t *testing.T) {
 	}
 }
 
-func TestHandleResumeAgent_FrozenIsResumable(t *testing.T) {
+func TestHandleResumeAgent_PausedIsResumable(t *testing.T) {
 	h, s := mustHandler(t)
 	h.dataDir = t.TempDir()
 
 	s.AgentCreate(storage.Agent{
 		ID: "agent-1", Project: "proj", Section: "task",
-		SessionID: "sess-1", Status: "frozen", Backend: "claude",
+		SessionID: "sess-1", Status: "paused", Backend: "claude",
 	})
 
 	resp := h.handleResumeAgent(map[string]any{"to": "agent-1"})
@@ -1445,5 +1447,242 @@ func TestFindCodexSessionID_SkipsNonMatchingSessionMeta(t *testing.T) {
 	}
 	if sid != "right-2" {
 		t.Errorf("session ID = %q, want right-2 (should skip non-matching session_meta and continue scanning)", sid)
+	}
+}
+
+// --- get_agent recommended_action field ---
+
+func TestGetAgent_RecommendedAction_Paused(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{
+		ID: "rec-paused", Project: "p", Section: "s",
+		Status: "paused", Backend: "claude",
+	})
+	resp := h.handleGetAgent(map[string]any{"to": "rec-paused"})
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	m := resultMap(t, resp)
+	if m["recommended_action"] != "relay_agent" {
+		t.Errorf("paused agent recommended_action=%v want relay_agent", m["recommended_action"])
+	}
+}
+
+func TestGetAgent_RecommendedAction_Stopped(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{
+		ID: "rec-stopped", Project: "p", Section: "s",
+		Status: "stopped", Backend: "claude",
+	})
+	resp := h.handleGetAgent(map[string]any{"to": "rec-stopped"})
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	m := resultMap(t, resp)
+	if m["recommended_action"] != "manual restart" {
+		t.Errorf("stopped agent recommended_action=%v want 'manual restart'", m["recommended_action"])
+	}
+}
+
+func TestGetAgent_RecommendedAction_Running(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{
+		ID: "rec-running", Project: "p", Section: "s",
+		Status: "running", Backend: "claude",
+	})
+	resp := h.handleGetAgent(map[string]any{"to": "rec-running"})
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	m := resultMap(t, resp)
+	if m["recommended_action"] != "monitor" {
+		t.Errorf("running agent recommended_action=%v want monitor", m["recommended_action"])
+	}
+}
+
+// --- relay_agent: paused allowed, stopped blocked ---
+
+func TestRelayAgent_PausedAllowed(t *testing.T) {
+	h, s := mustHandler(t)
+	// Use /tmp explicitly; on macOS t.TempDir() returns /var/folders/...
+	// paths >100 chars, exceeding UNIX_PATH_MAX for .sock.inject listener.
+	sockDir, err := os.MkdirTemp("/tmp", "rl")
+	if err != nil {
+		t.Fatalf("mkdir tmp: %v", err)
+	}
+	defer os.RemoveAll(sockDir)
+	sockPath := filepath.Join(sockDir, "agent.sock")
+	injectPath := sockPath + ".inject"
+	ln, err := net.Listen("unix", injectPath)
+	if err != nil {
+		t.Fatalf("listen inject: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		// Drain the listener so the dial in handleRelayAgent succeeds.
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			io.Copy(io.Discard, c)
+			c.Close()
+		}
+	}()
+
+	s.AgentCreate(storage.Agent{
+		ID: "relay-paused", Project: "p", Section: "s",
+		Status: "paused", Backend: "claude", SockPath: sockPath,
+	})
+	resp := h.handleRelayAgent(map[string]any{
+		"to":      "relay-paused",
+		"content": "hello paused agent",
+	})
+	if resp.Error != "" {
+		t.Fatalf("relay to paused agent should succeed, got error: %s", resp.Error)
+	}
+}
+
+func TestRelayAgent_StoppedBlocked(t *testing.T) {
+	h, s := mustHandler(t)
+	s.AgentCreate(storage.Agent{
+		ID: "relay-stopped", Project: "p", Section: "s",
+		Status: "stopped", Backend: "claude", SockPath: "/tmp/whatever.sock",
+	})
+	resp := h.handleRelayAgent(map[string]any{
+		"to":      "relay-stopped",
+		"content": "hello stopped agent",
+	})
+	if resp.Error == "" {
+		t.Fatal("relay to stopped agent should be blocked, got no error")
+	}
+	if !strings.Contains(resp.Error, "not running") && !strings.Contains(resp.Error, "stopped") {
+		t.Errorf("relay to stopped agent error should mention 'stopped' or 'not running', got: %s", resp.Error)
+	}
+}
+
+func TestRelayAgent_RunningAllowed(t *testing.T) {
+	h, s := mustHandler(t)
+	sockDir, err := os.MkdirTemp("/tmp", "rl")
+	if err != nil {
+		t.Fatalf("mkdir tmp: %v", err)
+	}
+	defer os.RemoveAll(sockDir)
+	sockPath := filepath.Join(sockDir, "agent.sock")
+	injectPath := sockPath + ".inject"
+	ln, err := net.Listen("unix", injectPath)
+	if err != nil {
+		t.Fatalf("listen inject: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			io.Copy(io.Discard, c)
+			c.Close()
+		}
+	}()
+
+	s.AgentCreate(storage.Agent{
+		ID: "relay-running", Project: "p", Section: "s",
+		Status: "running", Backend: "claude", SockPath: sockPath,
+	})
+	resp := h.handleRelayAgent(map[string]any{
+		"to":      "relay-running",
+		"content": "hello running agent",
+	})
+	if resp.Error != "" {
+		t.Fatalf("relay to running agent should succeed, got error: %s", resp.Error)
+	}
+}
+
+// --- buildAgentExtraEnv (parallel-safe agent identity injection) ---
+// spawnAgentProcess builds extraEnv for the spawned backend's environment.
+// For opencode/codex we inject YESMEM_SOURCE_AGENT + YESMEM_SESSION_ID so the
+// yesmem-mcp child (spawned by the backend) can resolve its own session id
+// without relying on the global active_session_opencode proxy-state, which is
+// Last-Writer-Wins across parallel agents. Codex additionally gets
+// CODEX_THREAD_ID because internal/mcp/server.go resolveClientSessionID reads
+// CODEX_THREAD_ID for the codex path (not YESMEM_SESSION_ID).
+
+func containsEnv(kv []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, e := range kv {
+		if strings.HasPrefix(e, prefix) {
+			return strings.TrimPrefix(e, prefix), true
+		}
+	}
+	return "", false
+}
+
+func TestBuildAgentExtraEnv_OpenCode(t *testing.T) {
+	env := buildAgentExtraEnv("opencode", "synthetic-oc-uuid")
+	if v, ok := containsEnv(env, "YESMEM_SOURCE_AGENT"); !ok || v != "opencode" {
+		t.Errorf("YESMEM_SOURCE_AGENT: want opencode, got %q (present=%v)", v, ok)
+	}
+	if v, ok := containsEnv(env, "YESMEM_SESSION_ID"); !ok || v != "synthetic-oc-uuid" {
+		t.Errorf("YESMEM_SESSION_ID: want synthetic-oc-uuid, got %q (present=%v)", v, ok)
+	}
+	if _, ok := containsEnv(env, "CODEX_THREAD_ID"); ok {
+		t.Error("CODEX_THREAD_ID must NOT be set for opencode backend")
+	}
+	if _, ok := containsEnv(env, "OPENAI_API_KEY"); ok {
+		t.Error("OPENAI_API_KEY must NOT be set for opencode backend (codex-only)")
+	}
+}
+
+func TestBuildAgentExtraEnv_Codex(t *testing.T) {
+	env := buildAgentExtraEnv("codex", "synthetic-cx-uuid")
+	if v, ok := containsEnv(env, "YESMEM_SOURCE_AGENT"); !ok || v != "codex" {
+		t.Errorf("YESMEM_SOURCE_AGENT: want codex, got %q (present=%v)", v, ok)
+	}
+	if v, ok := containsEnv(env, "YESMEM_SESSION_ID"); !ok || v != "synthetic-cx-uuid" {
+		t.Errorf("YESMEM_SESSION_ID: want synthetic-cx-uuid, got %q (present=%v)", v, ok)
+	}
+	// resolveClientSessionID in internal/mcp/server.go reads CODEX_THREAD_ID
+	// for the codex branch, so we must mirror the value there.
+	if v, ok := containsEnv(env, "CODEX_THREAD_ID"); !ok || v != "synthetic-cx-uuid" {
+		t.Errorf("CODEX_THREAD_ID: want synthetic-cx-uuid, got %q (present=%v)", v, ok)
+	}
+}
+
+func TestBuildAgentExtraEnv_ClaudeNoInjection(t *testing.T) {
+	// Claude backend owns its session via --session-id flag; no ENV needed.
+	env := buildAgentExtraEnv("claude", "claude-sess")
+	for _, key := range []string{"YESMEM_SOURCE_AGENT", "YESMEM_SESSION_ID", "CODEX_THREAD_ID"} {
+		if v, ok := containsEnv(env, key); ok {
+			t.Errorf("%s must not be set for claude backend, got %q", key, v)
+		}
+	}
+}
+
+func TestBuildAgentExtraEnv_CodexAuthKeyMerged(t *testing.T) {
+	// The helper reads ~/.codex/auth.json when backend=="codex". If the file
+	// is absent (typical CI/sandbox), loadCodexAuthEnv returns an error and
+	// the helper continues without OPENAI_API_KEY — but the identity vars
+	// must still be present so the MCP child can self-identify.
+	env := buildAgentExtraEnv("codex", "uuid-with-no-auth")
+	if v, ok := containsEnv(env, "YESMEM_SOURCE_AGENT"); !ok || v != "codex" {
+		t.Errorf("YESMEM_SOURCE_AGENT missing even without auth file: %q (ok=%v)", v, ok)
+	}
+	if v, ok := containsEnv(env, "CODEX_THREAD_ID"); !ok || v != "uuid-with-no-auth" {
+		t.Errorf("CODEX_THREAD_ID missing without auth file: %q (ok=%v)", v, ok)
+	}
+}
+
+func TestBuildAgentExtraEnv_EmptySessionID(t *testing.T) {
+	// Defensive: empty sessionID must not inject empty YESMEM_SESSION_ID=, as
+	// that would make resolveClientSessionID return "" with sa="opencode" —
+	// causing resolveSessionID to skip the MCP _session_id path and fall
+	// through to proxy-state, defeating the fix.
+	env := buildAgentExtraEnv("opencode", "")
+	if _, ok := containsEnv(env, "YESMEM_SESSION_ID"); ok {
+		t.Errorf("YESMEM_SESSION_ID must be omitted when sessionID is empty, got %v", env)
+	}
+	if _, ok := containsEnv(env, "YESMEM_SOURCE_AGENT"); ok {
+		t.Errorf("YESMEM_SOURCE_AGENT must also be omitted when sessionID is empty (no partial identity)")
 	}
 }

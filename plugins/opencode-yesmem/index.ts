@@ -11,7 +11,6 @@ function dbgLog(tag: string, msg: string) {
 import { failureLearnHook } from "./failure_learn";
 import { autoResolveHook } from "./auto_resolve";
 import { idleReminderHook } from "./idle_reminder";
-import { hsNudgeHook } from "./hs_nudge";
 import { skillNudgeHook } from "./skill_nudge";
 import { ruleGuardHook } from "./rule_guard";
 import { YesMemRPC } from "./rpc";
@@ -19,8 +18,9 @@ import { YesMemRPC } from "./rpc";
 export const YesMemPlugin = async (ctx: any) => {
   const rpc = new YesMemRPC();
   const directory = ctx.directory || process.env.PWD || "";
-          const V = 13; // bump to bust Bun module cache
+          const V = 14; // bump to bust Bun module cache
 
+          // v14: hs_nudge removed — non-idempotent per-request mutation busted prefix cache; frozen [think-reminder] carries the same message cache-safe
           // v12: skill_nudge user-message evaluation
   if (directory) {
     rpc.call("search_code_index", {
@@ -36,7 +36,6 @@ export const YesMemPlugin = async (ctx: any) => {
   const fl = failureLearnHook(rpc);
   const ar = autoResolveHook(rpc);
     const ir = idleReminderHook(rpc);
-    const hs = hsNudgeHook();
     const sn = skillNudgeHook();
 
   // Compose: both need tool.execute.before — code_nav blocks first, then rule_guard
@@ -52,10 +51,9 @@ export const YesMemPlugin = async (ctx: any) => {
     try { await ar["tool.execute.after"]?.(input, output); } catch {}
   }
 
-    // Compose: experimental.chat.messages.transform — rule_guard conversation capture + hs_nudge + skill_nudge
+    // Compose: experimental.chat.messages.transform — rule_guard conversation capture + skill_nudge
     async function composedMessagesTransform(input: any, output: any) {
       try { await grd["experimental.chat.messages.transform"]?.(input, output); } catch {}
-      try { await hs["experimental.chat.messages.transform"]?.(input, output); } catch {}
       try { await sn["experimental.chat.messages.transform"]?.(input, output); } catch {}
     }
 

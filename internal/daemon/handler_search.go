@@ -7,22 +7,38 @@ import (
 	"time"
 
 	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/carsteneu/yesmem/internal/storage"
 )
 
 func (h *Handler) handleSearch(params map[string]any) Response {
 	query, _ := params["query"].(string)
+	queryEn, _ := params["query_en"].(string)
 	project, _ := params["project"].(string)
 	excludeSession, _ := params["exclude_session"].(string)
 	since, _ := params["since"].(string)
 	before, _ := params["before"].(string)
 	limit := intOr(params, "limit", 10)
 
+	// Bilingual search: when query_en is set, run both queries with RRF fusion
+	if queryEn != "" {
+		hits, err := h.store.SearchMessagesBilingualCtx(query, queryEn, since, before, limit*3)
+		if err != nil {
+			return errorResponse(err.Error())
+		}
+		return h.filterSearchResults(hits, project, excludeSession, limit)
+	}
+
 	hits, err := h.store.SearchMessagesCtx(query, since, before, limit*3) // over-fetch for project filter
 	if err != nil {
 		return errorResponse(err.Error())
 	}
 
-	// Batch-load session metadata for all hits at once (single query)
+	return h.filterSearchResults(hits, project, excludeSession, limit)
+}
+
+// filterSearchResults is the common post-processing for search results:
+// project filtering, session exclusion, snippet truncation, and enrichment.
+func (h *Handler) filterSearchResults(hits []storage.MessageSearchResult, project, excludeSession string, limit int) Response {
 	sessionIDs := make([]string, 0, len(hits))
 	seen := make(map[string]bool)
 	for _, hit := range hits {
@@ -94,6 +110,7 @@ func (h *Handler) annotateSubagentInfo(results []models.SearchResult) {
 
 func (h *Handler) handleDeepSearch(params map[string]any) Response {
 	query, _ := params["query"].(string)
+	queryEn, _ := params["query_en"].(string)
 	project, _ := params["project"].(string)
 	excludeSession, _ := params["exclude_session"].(string)
 	since, _ := params["since"].(string)
@@ -105,11 +122,24 @@ func (h *Handler) handleDeepSearch(params map[string]any) Response {
 	t0 := time.Now()
 	ftsStart := time.Now()
 
-	// FTS5 now indexes thinking blocks (content_blob copied to content),
-	// so we search all types directly — no separate enrichment queries needed
-	hits, err := h.store.SearchMessagesDeepCtx(query, includeThinking, includeCommands, since, before, limit*3)
-	if err != nil {
-		return errorResponse(err.Error())
+	var hits []storage.MessageSearchResult
+	var err error
+	if queryEn != "" {
+		// Bilingual deep search: storage-side RRF fusion (dedup by ID,
+		// deterministic tiebreak). Pass limit*3 so the downstream project
+		// filter sees the same pool size as the standard path — truncating
+		// here would starve the filter when multiple hits share a project.
+		hits, err = h.store.SearchMessagesDeepBilingualCtx(query, queryEn, includeThinking, includeCommands, since, before, limit*3)
+		if err != nil {
+			return errorResponse(err.Error())
+		}
+	} else {
+		// Standard path — FTS5 now indexes thinking blocks (content_blob copied to content),
+		// so we search all types directly — no separate enrichment queries needed
+		hits, err = h.store.SearchMessagesDeepCtx(query, includeThinking, includeCommands, since, before, limit*3)
+		if err != nil {
+			return errorResponse(err.Error())
+		}
 	}
 	ftsMs := time.Since(ftsStart).Milliseconds()
 

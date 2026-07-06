@@ -1172,8 +1172,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Loop detection: check for repeating tool-call patterns and inject warning
-	if threadID != "" && !isRetryReq {
+	// Loop detection: check for repeating tool-call patterns and stash warning.
+	// The warning is merged into the last user message's TimestampMeta during
+	// entry assembly below — cache-safe via freeze-once-replay through TimestampStore.
+	loopWarning := ""
+	if threadID != "" && !isRetryReq && isFeatureEnabled(&s.cfg, model, "loop_warning") {
 		s.loopMu.Lock()
 		loopState := s.loopStates[threadID]
 		if loopState == nil {
@@ -1183,9 +1186,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		s.loopMu.Unlock()
 
 		if warning, level := CheckLoopAndFormat(messages, loopState); warning != "" {
-			AppendSystemBlock(req, "yesmem-loop-warning", warning)
-			needsReserialization = true
-			s.logger.Printf("%s[req %d %s tid=%s] LOOP: level %d warning injected%s", colorOrange, reqIdx, proj, threadID, level, colorReset)
+			loopWarning = warning
+			s.logger.Printf("%s[req %d %s tid=%s] LOOP: level %d warning stashed (cached via TimestampMeta)%s", colorOrange, reqIdx, proj, threadID, level, colorReset)
 		}
 	}
 
@@ -1384,16 +1386,34 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Current (last) user message: full timestamp + delta + msg:N from raw count
+			// Loop warning (if stashed above) is merged here — cache-safe via freeze-once-replay.
 			lastMsg, _ := currentMsgs[len(currentMsgs)-1].(map[string]any)
-			if lastMsg != nil && lastMsg["role"] == "user" && !msgHasMetaPrefix(lastMsg) {
+			if lastMsg != nil && (lastMsg["role"] == "user" || lastMsg["role"] == "tool") && !msgHasMetaPrefix(lastMsg) {
 				now := time.Now()
 				nowStr := shortWeekday(now.Weekday()) + " " + now.Format("2006-01-02 15:04:05")
 				entry := &TimestampMeta{Timestamp: nowStr}
 				if hasRespTime {
 					entry.Delta = formatDelta(now.Sub(respTime))
 				}
+				entry.LoopWarning = loopWarning
+
+				// Plan checkpoint: detect plan tool calls (resets counter), inject reminder if interval fires
+				if isFeatureEnabled(&s.cfg, model, "plan_checkpoint") {
+					s.detectPlanToolCall(messages, threadID, totalTokens)
+					if checkpoint := s.planCheckpointInject(threadID, totalTokens); checkpoint != "" {
+						entry.PlanCheckpoint = checkpoint
+						s.logger.Printf("%s[req %d %s tid=%s] plan checkpoint stashed (cached via TimestampMeta)%s", colorBlue, reqIdx, proj, threadID, colorReset)
+					}
+				}
+
+				// Docs hint: inject docs-available reminder if interval fires
+				if docsHint := s.docsHintInject(threadID, totalTokens, proj); docsHint != "" {
+					entry.DocsHint = docsHint
+					s.logger.Printf("%s[req %d %s tid=%s] docs hint stashed (cached via TimestampMeta)%s", colorBlue, reqIdx, proj, threadID, colorReset)
+				}
+
 				s.timestampStore.Store(threadID, rawMsgCount, entry)
-				if isFeatureEnabled(&s.cfg, model, "timestamps") {
+				if isFeatureEnabled(&s.cfg, model, "timestamps") || entry.LoopWarning != "" || entry.PlanCheckpoint != "" || entry.DocsHint != "" {
 					prependMeta(lastMsg, BuildMeta(rawMsgCount, entry))
 				}
 				needsReserialization = true
@@ -1457,28 +1477,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Plan checkpoint: inject plan reminder every ~20k tokens if active plan exists
-	s.detectPlanToolCall(messages, threadID, totalTokens)
-	if checkpoint := s.planCheckpointInject(threadID, totalTokens); checkpoint != "" {
-		currentMessages, _ := req["messages"].([]any)
-		if currentMessages == nil {
-			currentMessages = messages
-		}
-		req["messages"] = injectAssociativeContext(currentMessages, checkpoint, s.cfg.SawtoothEnabled)
-		needsReserialization = true
-		s.logger.Printf("%s[req %d %s tid=%s] plan checkpoint injected%s", colorBlue, reqIdx, proj, threadID, colorReset)
-	}
+	// Plan checkpoint and docs hint are now injected via TimestampMeta freeze-once
+	// in the current-message annotation block above. The old injectAssociativeContext
+	// calls were removed as part of the cache-safe migration (see merge 58bca90a).
 
-	// Docs hint injection: inject docs-available reminder every ~10k tokens (independent of plan)
-	if docsHint := s.docsHintInject(threadID, totalTokens, proj); docsHint != "" {
-		currentMessages, _ := req["messages"].([]any)
-		if currentMessages == nil {
-			currentMessages = messages
-		}
-		req["messages"] = injectAssociativeContext(currentMessages, docsHint, s.cfg.SawtoothEnabled)
-		needsReserialization = true
-		s.logger.Printf("%s[req %d %s tid=%s] docs hint injected%s", colorBlue, reqIdx, proj, threadID, colorReset)
-	}
 	if len(remItems) > 0 {
 		var lines []string
 		for _, item := range remItems {
@@ -1685,7 +1687,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			if hasRespTime {
 				for i := len(msgs) - 1; i >= startIdx; i-- {
 					msg, _ := msgs[i].(map[string]any)
-					if msg != nil && msg["role"] == "assistant" {
+					if msg != nil && msg["role"] == "assistant" && msgHasTextBlock(msg) {
 						meta := fmt.Sprintf("[%s] [msg:%d]", respTime.Format("2006-01-02 15:04:05"), i)
 						prependMeta(msg, meta)
 						needsReserialization = true

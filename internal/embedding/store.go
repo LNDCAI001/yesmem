@@ -10,7 +10,44 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/carsteneu/yesmem/internal/models"
 )
+
+// projectMatchesTolerant reports whether a learning belongs to the requested project,
+// accepting any of the four caller/storage combinations (short name, full path, worktree
+// path on either side). Mirrors storage.projectMatchesTolerant — duplicated here to
+// avoid an embedding→storage import cycle. See that function for the full rules.
+// Empty requested matches anything; empty stored values match any requested (legacy rows).
+// Direct equality short-circuits. Otherwise canonicalize both sides via models.CanonicalProject,
+// but skip canonicalization when BOTH sides are absolute paths so /a/foo and /b/foo
+// (different repos sharing a basename) do NOT match each other.
+func projectMatchesTolerant(storedProject, storedCanonical, requested string) bool {
+	if requested == "" {
+		return true
+	}
+	if storedCanonical == "" && storedProject == "" {
+		return true
+	}
+	reqIsAbs := strings.HasPrefix(requested, "/")
+	reqCanon := models.CanonicalProject(requested)
+	for _, stored := range []string{storedCanonical, storedProject} {
+		if stored == "" {
+			continue
+		}
+		if stored == requested {
+			return true
+		}
+		storedIsAbs := strings.HasPrefix(stored, "/")
+		if storedIsAbs && reqIsAbs {
+			continue
+		}
+		if models.CanonicalProject(stored) == reqCanon {
+			return true
+		}
+	}
+	return false
+}
 
 // VectorDoc represents a document to store in the vector store.
 type VectorDoc struct {
@@ -176,10 +213,14 @@ func (s *VectorStore) SearchWithProject(ctx context.Context, queryEmbedding []fl
 		if err != nil || project == "" {
 			return results, err
 		}
-		// Post-filter IVF results by project
+		// Post-filter IVF results by project. IVF metadata carries only a single
+		// "project" field (no canonical_project), so we pass it as both args to
+		// projectMatchesTolerant; the both-abs short-circuit prevents /a/foo vs /b/foo
+		// collisions while still allowing short-name callers to match full-path metadata.
 		filtered := results[:0]
 		for _, r := range results {
-			if rp, ok := r.Metadata["project"]; !ok || rp == project {
+			rp, _ := r.Metadata["project"]
+			if projectMatchesTolerant(rp, rp, project) {
 				filtered = append(filtered, r)
 			}
 		}
@@ -199,14 +240,23 @@ func (s *VectorStore) bruteForceScan(ctx context.Context, queryEmbedding []float
 
 	var rows *sql.Rows
 	var err error
+	// SQL pre-filter to shrink the working set. The post-filter via projectMatchesTolerant
+	// below handles edge cases (worktree paths, same-basename collision avoidance) that
+	// this clause cannot express in SQL. We pass both the raw requested value and its
+	// canonical basename so legacy rows (canonical_project='yesmem') match when the
+	// caller passes a full path, and vice versa.
 	if project != "" {
+		reqCanon := models.CanonicalProject(project)
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT CAST(id AS TEXT), content, embedding_vector, COALESCE(project, ''), COALESCE(category, '')
+			`SELECT CAST(id AS TEXT), content, embedding_vector, COALESCE(project, ''), COALESCE(canonical_project, ''), COALESCE(category, '')
 			 FROM learnings
-			 WHERE embedding_vector IS NOT NULL AND superseded_by IS NULL AND project = ?`, project)
+			 WHERE embedding_vector IS NOT NULL AND superseded_by IS NULL
+			   AND (project = ? OR canonical_project = ? OR project = ? OR canonical_project = ?
+			        OR (project = '' AND canonical_project = ''))`,
+			project, project, reqCanon, reqCanon)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT CAST(id AS TEXT), content, embedding_vector, COALESCE(project, ''), COALESCE(category, '')
+			`SELECT CAST(id AS TEXT), content, embedding_vector, COALESCE(project, ''), COALESCE(canonical_project, ''), COALESCE(category, '')
 			 FROM learnings
 			 WHERE embedding_vector IS NOT NULL AND superseded_by IS NULL`)
 	}
@@ -216,23 +266,26 @@ func (s *VectorStore) bruteForceScan(ctx context.Context, queryEmbedding []float
 	defer rows.Close()
 
 	type scored struct {
-		id, content, project, category string
-		similarity                     float32
+		id, content, project, canonicalProject, category string
+		similarity                                        float32
 	}
 	var all []scored
 
 	for rows.Next() {
-		var id, content, project, category string
+		var id, content, rowProject, canonicalProject, category string
 		var blob []byte
-		if err := rows.Scan(&id, &content, &blob, &project, &category); err != nil {
+		if err := rows.Scan(&id, &content, &blob, &rowProject, &canonicalProject, &category); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
+		}
+		if !projectMatchesTolerant(rowProject, canonicalProject, project) {
+			continue
 		}
 		vec := DeserializeFloat32(blob)
 		if len(vec) != len(queryEmbedding) {
 			continue
 		}
 		sim := cosineSimilarity(queryEmbedding, vec)
-		all = append(all, scored{id: id, content: content, project: project, category: category, similarity: sim})
+		all = append(all, scored{id: id, content: content, project: rowProject, canonicalProject: canonicalProject, category: category, similarity: sim})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -242,9 +295,10 @@ func (s *VectorStore) bruteForceScan(ctx context.Context, queryEmbedding []float
 	memCount := len(s.memDocs)
 	memMatched := 0
 	for _, doc := range s.memDocs {
-		// Project filter for memDocs
+		// Project filter for memDocs (tolerant: short name vs full path vs worktree)
 		if project != "" {
-			if dp, ok := doc.Metadata["project"]; ok && dp != project {
+			dp, _ := doc.Metadata["project"]
+			if dp != "" && !projectMatchesTolerant(dp, "", project) {
 				continue
 			}
 		}

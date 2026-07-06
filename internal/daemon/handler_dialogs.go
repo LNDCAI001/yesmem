@@ -40,6 +40,15 @@ func (h *Handler) resolveSessionID(params map[string]any, key string) string {
 			h.pidMapMu.Unlock()
 			return sid
 		}
+		// DB fallback: parallel-safe resolution for non-claude backends.
+		// pidMap and PID file can miss (fresh daemon start, in-memory cleared),
+		// and the global proxy-state below is Last-Writer-Wins across concurrent
+		// agents. The agents table is the authoritative record: bridge stores
+		// the backend PID in agents.pid at spawn time, so a direct lookup
+		// uniquely identifies the caller's agent.
+		if agent, err := h.store.AgentGetByPID(int(pid)); err == nil && agent != nil {
+			return agent.SessionID
+		}
 	}
 	h.activeSessionMu.Lock()
 	defer h.activeSessionMu.Unlock()
@@ -535,6 +544,9 @@ func (h *Handler) handleWhoami(params map[string]any) Response {
 	}
 
 	if sessionID != "" {
+		// AgentGetAnyBySession tolerates "opencode:"/"codex:" prefixes on the
+		// sessionID (storage-layer stripAgentPrefix); the response preserves
+		// the prefixed value for caller-contract compatibility.
 		if agent, err := h.store.AgentGetAnyBySession(sessionID); err == nil && agent != nil {
 			result["agent_id"] = agent.ID
 			result["section"]  = agent.Section

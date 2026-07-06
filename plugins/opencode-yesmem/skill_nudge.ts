@@ -1,7 +1,7 @@
 // skill_nudge.ts — Staged skill suggestion on user messages
 // Stage 1: Local substring match against YAML trigger arrays (fast, deterministic)
 // Stage 2: DeepSeek V4 Flash fallback via direct API (semantic match)
-// Injects nudge via experimental.chat.messages.transform (same surface as hs_nudge.ts)
+// Injects nudge via experimental.chat.messages.transform
 
 import { appendFileSync } from "node:fs";
 import { resolveGuardConfig } from "./rule_guard";
@@ -149,7 +149,7 @@ export function skillNudgeHook() {
   return {
     "experimental.chat.messages.transform": async (_input: any, output: any) => {
       try {
-        // 1. Find the last user message (same pattern as hs_nudge.ts)
+        // 1. Find the last user message
         const msgs = output?.messages || [];
         let userText = "";
         for (let i = msgs.length - 1; i >= 0; i--) {

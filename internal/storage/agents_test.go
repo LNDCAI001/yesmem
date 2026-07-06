@@ -500,3 +500,206 @@ func TestAgentUpdateProxyThreadID(t *testing.T) {
 		t.Errorf("ProxyThreadID = %q, want new-thread-hash", a.ProxyThreadID)
 	}
 }
+
+// --- Legacy "frozen" status normalization on read ---
+
+func TestAgentGet_NormalizesLegacyFrozenStatus(t *testing.T) {
+	s := newTestStore(t)
+	// Insert raw "frozen" status (legacy DB row from before the paused/stopped split)
+	if err := s.AgentCreate(Agent{
+		ID: "legacy-frozen", Project: "p", Section: "s", Status: "frozen",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	a, err := s.AgentGet("legacy-frozen")
+	if err != nil {
+		t.Fatalf("AgentGet: %v", err)
+	}
+	if a.Status != "paused" {
+		t.Errorf("legacy frozen status should normalize to paused, got %q", a.Status)
+	}
+}
+
+func TestAgentList_NormalizesLegacyFrozenStatus(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AgentCreate(Agent{
+		ID: "list-frozen", Project: "p", Section: "s", Status: "frozen",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	agents, err := s.AgentList("p")
+	if err != nil {
+		t.Fatalf("AgentList: %v", err)
+	}
+	for _, a := range agents {
+		if a.ID == "list-frozen" && a.Status != "paused" {
+			t.Errorf("legacy frozen in list should normalize to paused, got %q", a.Status)
+		}
+	}
+}
+
+// --- Backend-session lookup (opencode_session_id / codex_session_id) ---
+// whoami() resolves the caller via AgentGetBySession / AgentGetAnyBySession.
+// Spawned opencode/codex agents carry a synthetic session_id (never matches)
+// and persist their real backend session in opencode_session_id / codex_session_id.
+// The lookup MUST fall back to those columns or whoami returns is_agent=false.
+
+func TestAgentGetBySession_MatchesOpenCodeSessionID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AgentCreate(Agent{
+		ID: "agent-oc", Project: "proj", Section: "sec",
+		SessionID: "synthetic-uuid-1", OpencodeSessionID: "ses_real_oc_1",
+		Status: "running",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	// Bare lookup (no prefix)
+	got, err := s.AgentGetBySession("ses_real_oc_1")
+	if err != nil {
+		t.Fatalf("AgentGetBySession(bare opencode id): %v", err)
+	}
+	if got.ID != "agent-oc" {
+		t.Errorf("bare: expected agent-oc, got %q", got.ID)
+	}
+	// Prefixed lookup (storage-layer stripAgentPrefix boundary contract)
+	got, err = s.AgentGetBySession("opencode:ses_real_oc_1")
+	if err != nil {
+		t.Fatalf("AgentGetBySession(prefixed opencode id): %v", err)
+	}
+	if got.ID != "agent-oc" {
+		t.Errorf("prefixed: expected agent-oc, got %q", got.ID)
+	}
+}
+
+func TestAgentGetBySession_MatchesCodexSessionID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AgentCreate(Agent{
+		ID: "agent-cx", Project: "proj", Section: "sec",
+		SessionID: "synthetic-uuid-2", CodexSessionID: "ses_real_cx_2",
+		Status: "running",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	got, err := s.AgentGetBySession("ses_real_cx_2")
+	if err != nil {
+		t.Fatalf("AgentGetBySession(codex id): %v", err)
+	}
+	if got.ID != "agent-cx" {
+		t.Errorf("expected agent-cx, got %q", got.ID)
+	}
+}
+
+func TestAgentGetAnyBySession_MatchesOpenCodeSessionID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AgentCreate(Agent{
+		ID: "agent-oc-any", Project: "proj", Section: "sec",
+		SessionID: "synthetic-uuid-3", OpencodeSessionID: "ses_real_oc_3",
+		Status: "stopped",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	// Bare lookup
+	got, err := s.AgentGetAnyBySession("ses_real_oc_3")
+	if err != nil {
+		t.Fatalf("AgentGetAnyBySession(bare opencode id): %v", err)
+	}
+	if got.ID != "agent-oc-any" {
+		t.Errorf("bare: expected agent-oc-any, got %q", got.ID)
+	}
+	// Prefixed lookup (storage-layer stripAgentPrefix boundary contract)
+	got, err = s.AgentGetAnyBySession("opencode:ses_real_oc_3")
+	if err != nil {
+		t.Fatalf("AgentGetAnyBySession(prefixed opencode id): %v", err)
+	}
+	if got.ID != "agent-oc-any" {
+		t.Errorf("prefixed: expected agent-oc-any, got %q", got.ID)
+	}
+}
+
+func TestStripAgentPrefix(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"opencode:ses_abc", "ses_abc"},
+		{"codex:thread_xyz", "thread_xyz"},
+		{"plain-sess", "plain-sess"},
+		{"opencode:", ""},
+		{"", ""},
+		{"opencode:ses_with:colon", "ses_with:colon"},
+	}
+	for _, c := range cases {
+		got := stripAgentPrefix(c.in)
+		if got != c.want {
+			t.Errorf("stripAgentPrefix(%q)=%q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestAgentGetAnyBySession_MatchesCodexSessionID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AgentCreate(Agent{
+		ID: "agent-cx-any", Project: "proj", Section: "sec",
+		SessionID: "synthetic-uuid-4", CodexSessionID: "ses_real_cx_4",
+		Status: "stopped",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	got, err := s.AgentGetAnyBySession("ses_real_cx_4")
+	if err != nil {
+		t.Fatalf("AgentGetAnyBySession(codex id): %v", err)
+	}
+	if got.ID != "agent-cx-any" {
+		t.Errorf("expected agent-cx-any, got %q", got.ID)
+	}
+}
+
+// --- AgentGetByPID (PID-based resolution for parallel-safe whoami) ---
+// resolveSessionID in internal/daemon/handler_dialogs.go falls back to the
+// _caller_pid sent by the MCP wrapper (= os.Getppid() = backend PID). The
+// agents.pid column stores bridge.Cmd.Process.Pid which equals the spawned
+// backend's PID. Restricted to status='running' so PID reuse after process
+// death cannot resurrect a stale mapping.
+
+func TestAgentGetByPID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AgentCreate(Agent{
+		ID: "agent-pid", Project: "proj-pid", Section: "sec-pid",
+		SessionID: "synthetic-pid-1", PID: 4242,
+		Status: "running",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	got, err := s.AgentGetByPID(4242)
+	if err != nil {
+		t.Fatalf("AgentGetByPID: %v", err)
+	}
+	if got.ID != "agent-pid" {
+		t.Errorf("expected agent-pid, got %q", got.ID)
+	}
+	if got.SessionID != "synthetic-pid-1" {
+		t.Errorf("expected synthetic-pid-1, got %q", got.SessionID)
+	}
+}
+
+func TestAgentGetByPID_SkipsStoppedAgents(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AgentCreate(Agent{
+		ID: "agent-pid-stopped", Project: "proj", Section: "sec",
+		SessionID: "sess-stopped", PID: 7373,
+		Status: "stopped",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+	got, err := s.AgentGetByPID(7373)
+	if err == nil && got != nil {
+		t.Errorf("expected no match for stopped agent (PID reuse protection), got %q", got.ID)
+	}
+}
+
+func TestAgentGetByPID_NoMatch(t *testing.T) {
+	s := newTestStore(t)
+	got, err := s.AgentGetByPID(99999)
+	if err == nil && got != nil {
+		t.Errorf("expected no match for unknown PID, got %q", got.ID)
+	}
+}

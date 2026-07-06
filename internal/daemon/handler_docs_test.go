@@ -429,11 +429,11 @@ func TestHandleIngestDocs_TriggerExtensions(t *testing.T) {
 	_ = resp
 }
 
-func TestHandleListDocSources_Empty(t *testing.T) {
+func TestHandleListDocs_Empty(t *testing.T) {
 	h, _ := mustHandler(t)
 
 	resp := h.Handle(Request{
-		Method: "list_doc_sources",
+		Method: "list_docs",
 		Params: map[string]any{},
 	})
 	if resp.Error != "" {
@@ -456,7 +456,7 @@ func TestHandleListDocSources_Empty(t *testing.T) {
 	}
 }
 
-func TestHandleListDocSources_WithData(t *testing.T) {
+func TestHandleListDocs_WithData(t *testing.T) {
 	h, s := mustHandler(t)
 
 	s.UpsertDocSource(&storage.DocSource{
@@ -470,7 +470,7 @@ func TestHandleListDocSources_WithData(t *testing.T) {
 
 	// Unfiltered: both sources
 	resp := h.Handle(Request{
-		Method: "list_doc_sources",
+		Method: "list_docs",
 		Params: map[string]any{},
 	})
 	if resp.Error != "" {
@@ -496,7 +496,7 @@ func TestHandleListDocSources_WithData(t *testing.T) {
 
 	// Filtered by project
 	resp = h.Handle(Request{
-		Method: "list_doc_sources",
+		Method: "list_docs",
 		Params: map[string]any{"project": "proj-a"},
 	})
 	if err := json.Unmarshal(resp.Result, &result); err != nil {

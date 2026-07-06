@@ -13,7 +13,7 @@ import (
 type Plan struct {
 	Content   string    `json:"content"`
 	Status    string    `json:"status"` // "active" or "completed"
-	Scope     string    `json:"scope"`  // "session" or "persistent"
+	Scope     string    `json:"scope"`  // "session" or "permanent"
 	Project   string    `json:"project"`
 	ThreadID  string    `json:"thread_id"`
 	DocsHint  string    `json:"docs_hint"` // formatted reminder for plan checkpoints

@@ -36,7 +36,25 @@ deploy: build
 	mkdir -p $(HOME)/.local/share/yesmem/plugins/opencode-yesmem
 	cp plugins/opencode-yesmem/*.ts plugins/opencode-yesmem/RULES.md plugins/opencode-yesmem/package.json $(HOME)/.local/share/yesmem/plugins/opencode-yesmem/
 	$(MAKE) restart-services
+	$(MAKE) reap-stale-mcp
 	@echo "deployed $(VERSION) → $(INSTALL)"
+
+# Kill langlaufende yesmem-mcp-Subprozesse, die noch das alte Binary
+# gemappt haben (/proc/PID/exe → ...yesmem (deleted)). Der mv-Schritt in
+# deploy ersetzt die Inode; langlaufende MCP-Children der opencode-Clients
+# behalten den alten Inode und servieren ein veraltetes Tool-Schema, bis
+# sie sterben und opencode sie neu forkt. Siehe Learning #81467.
+reap-stale-mcp:
+	@killed=0; \
+	for pid in $$(pgrep -f "$(INSTALL) mcp|$(BINARY) mcp"); do \
+		exe=$$(readlink /proc/$$pid/exe 2>/dev/null); \
+		case "$$exe" in \
+			*deleted*) kill $$pid 2>/dev/null && killed=$$((killed+1));; \
+		esac; \
+	done; \
+	if [ $$killed -gt 0 ]; then \
+		echo "reaped $$killed stale yesmem-mcp process(es) holding old binary"; \
+	fi
 
 restart-services:
 	@if systemctl --user list-unit-files yesmem.service >/dev/null 2>&1; then \

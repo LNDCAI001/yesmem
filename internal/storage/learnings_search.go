@@ -11,6 +11,52 @@ import (
 	"github.com/carsteneu/yesmem/internal/models"
 )
 
+// projectMatchesTolerant reports whether a learning (identified by its per-row project
+// and canonical_project columns) belongs to the requested project. Tolerance is needed
+// because callers pass either short names ("yesmem"), full paths ("/home/x/yesmem"), or
+// worktree paths ("/home/x/yesmem/.worktrees/foo"), while learnings carry a mix of
+// canonical_project values ("yesmem" for legacy rows, full paths for newer rows).
+//
+// Comparison rules:
+//   - Empty requested matches anything (no filter applied).
+//   - Empty stored values (legacy rows without project/canonical_project) match any
+//     requested value so these rows remain discoverable, mirroring the
+//     `OR canonical_project = ''` clause in SearchUnfinished.
+//   - Direct equality on either stored field (canonical or raw) matches.
+//   - Otherwise: canonicalize both sides via models.CanonicalProject (basename +
+//     .worktrees/ strip) and compare. Skip canonicalization when BOTH sides are
+//     absolute paths — this preserves the strict-equality guarantee for the
+//     same-basename-different-parent case (e.g., /a/foo vs /b/foo must NOT match).
+func projectMatchesTolerant(storedProject, storedCanonical, requested string) bool {
+	if requested == "" {
+		return true
+	}
+	if storedCanonical == "" && storedProject == "" {
+		return true
+	}
+	reqIsAbs := strings.HasPrefix(requested, "/")
+	reqCanon := models.CanonicalProject(requested)
+	for _, stored := range []string{storedCanonical, storedProject} {
+		if stored == "" {
+			continue
+		}
+		if stored == requested {
+			return true
+		}
+		// Canonicalize only when at least one side is a short name. When both are
+		// absolute paths that didn't compare equal above, treat as no-match to
+		// avoid /a/foo matching /b/foo (different repos sharing a basename).
+		storedIsAbs := strings.HasPrefix(stored, "/")
+		if storedIsAbs && reqIsAbs {
+			continue
+		}
+		if models.CanonicalProject(stored) == reqCanon {
+			return true
+		}
+	}
+	return false
+}
+
 // QueryFactsOpts defines filters for structured fact queries on learning metadata.
 type QueryFactsOpts struct {
 	Entity   string // LIKE match on learning_entities.value
@@ -249,16 +295,16 @@ func (s *Store) SearchLearningsBM25Ctx(ctx context.Context, query, project, sinc
 	n := len(sortedTerms)
 	seen := make(map[int]bool)
 	var tiers []tier
-	for _, count := range []int{5, 4, 3, 2} {
+	for _, count := range []int{5, 4, 3, 2, 1} {
 		c := count
 		if c > n {
 			c = n
 		}
-		if c < 2 || seen[c] {
+		if c < 1 || seen[c] {
 			continue
 		}
 		seen[c] = true
-		score := map[int]float64{5: 100, 4: 90, 3: 70, 2: 50}[count]
+		score := map[int]float64{5: 100, 4: 90, 3: 70, 2: 50, 1: 30}[count]
 		if c < count {
 			// fewer terms available than tier target — downgrade score proportionally
 			score = score * float64(c) / float64(count)
@@ -334,7 +380,7 @@ func (s *Store) SearchLearningsBM25Ctx(ctx context.Context, query, project, sinc
 		case "unfinished":
 			score *= 0.7
 		}
-		if project != "" && m.canonicalProject != "" && m.canonicalProject != project {
+		if project != "" && !projectMatchesTolerant(m.project, m.canonicalProject, project) {
 			continue
 		}
 		if since != "" && m.createdAt < since {
@@ -463,7 +509,7 @@ func (s *Store) runAQFTSQuery(ftsQuery, project string, limit int, since, before
 		if err := rows.Scan(&lid, &content, &score, &proj, &canon); err != nil {
 			continue
 		}
-		if project != "" && canon != project {
+		if project != "" && !projectMatchesTolerant(proj, canon, project) {
 			continue
 		}
 		if seen[lid] {

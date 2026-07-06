@@ -195,7 +195,7 @@ func (h *Handler) maybeDoneVerifyRefire(agent storage.Agent, state *yesloopDoneV
 			agent.ID, agent.Section, reason, state.refireCount, yesloopDoneVerifyMaxRefires)
 		state.state = yesloopDoneVerifyStateDeadAgentEscalation
 		state.transitionedAt = time.Now()
-		h.freezeAgent(agent.ID, fmt.Sprintf("yesloop-done-verify escalation: %s", reason))
+		h.pauseAgent(agent.ID, fmt.Sprintf("yesloop-done-verify escalation: %s", reason))
 		h.notifyOrchestrator(agent, fmt.Sprintf(
 			"DEAD_AGENT: Agent %s (%s) done-verify escalation — %s",
 			agent.ID, agent.Section, reason))

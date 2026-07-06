@@ -110,7 +110,7 @@ Since yesmem v2.1.21, the heartbeat scheduler enforces the DONE contract **autom
 5. Phase 6 must contain `send_to orchestrator:` and deploy evidence
 
 **When the guard fires:**
-- Agent is frozen with reason `DONE-GUARD: phase validation failed — <errors>`
+- Agent is paused with reason `DONE-GUARD: phase validation failed — <errors>`
 - Orchestrator receives `⛔ DONE-GUARD:` notification via `send_to`
 - Agent must fix phase blocks and be resumed
 
@@ -299,12 +299,17 @@ update_agent_status(phase="Phase 6/6 FINISH")
 **PR created:** yes — <url> | no — <reason>
 **Worktree:** kept (pending merge confirmation) | deleted
 **send_to orchestrator:** yes — <timestamp>
+**send_to payload:** `[DONE] [DEPLOY: yes|no|skipped|failed] [COMMIT: <hash>] [BRANCH: <name>] [MERGE: no|pending-PR|blocked-PR] <summary>`
 **set_plan complete:** yes
 ```
 
+- **send_to marker convention (mandatory in Phase 6):** Orchestrator parses these markers — keep them leading in the `send_to` payload, summary free-text after.
+  - `DEPLOY`: `yes` (deployed), `no` (docs-only, not required), `skipped` (required but skipped per instruction/contract), `failed` (attempted, failed — escalate)
+  - `MERGE`: `no` (default — agents never merge), `pending-PR` (PR created, awaits orchestrator), `blocked-PR` (PR has blockers)
+
 - **Default: Create PR** from worktree branch to main
 - **`--merge` flag:** merge PR after all checks pass (only if user requested)
-- Without `--merge`: send_to caller_session: "DONE: <summary>. PR: <url>"
+- Without `--merge`: send_to caller_session: "[DONE] [DEPLOY: <status>] [COMMIT: <hash>] [BRANCH: <name>] [MERGE: pending-PR] <summary>. PR: <url>"
 - **Do NOT delete worktree** — keep until user confirms merge
 
 ## Mini Example (filled Phase 3, others stubbed)
@@ -374,6 +379,7 @@ update_agent_status(phase="Phase 6/6 FINISH")
 **Deploy executed:** yes — make build → binary mtime 2026-06-20T00:40
 **PR created:** no — merged directly per orchestrator (merge commit 27e35ca)
 **send_to orchestrator:** yes — 2026-06-20T00:47
+**send_to payload:** `[DONE] [DEPLOY: yes] [COMMIT: 27e35ca] [BRANCH: yesloop/example-task] [MERGE: no] Add config.yaml read/write`
 **set_plan complete:** yes
 ```
 
@@ -454,7 +460,7 @@ On startup, before ANY other action:
 
 ### Completion — MUST do all three:
 1. `scratchpad_write(content="✅ DONE: <summary>. PR: <url>")` — final write with all 6 phase blocks COMPLETE
-2. `send_to(target=<caller_session>, content="DONE: <summary>. PR: <url>")` — notify orchestrator (DB-stored, orchestrator polls)
+2. `send_to(target=<caller_session>, content="[DONE] [DEPLOY: <status>] [COMMIT: <hash>] [BRANCH: <name>] [MERGE: <status>] <summary>. PR: <url>")` — markers leading, parsed by orchestrator; summary free-text after
 3. `set_plan(...)` mark as completed
 
 **NOTE:** `send_to` stores in DB but push delivery is unreliable for OpenCode targets. Orchestrator polls `check_messages`. Scratchpad is primary completion channel.
@@ -514,7 +520,7 @@ The idle checker reads the agent's scratchpad section to detect progress:
 ### Re-fire and Escalation
 
 - Each state re-fires the relay after 90 seconds if no progress
-- After 2 re-fires (3 total attempts), the agent is **frozen** as DEAD_AGENT
+- After 2 re-fires (3 total attempts), the agent is **paused** as DEAD_AGENT
 - The orchestrator (caller_session) is notified via send_to
 
 ### What triggers idle detection
@@ -559,7 +565,7 @@ The done-verify checker reads the agent's scratchpad section to detect progress:
 ### Re-fire and Escalation
 
 - Re-fires the relay every 5 minutes if no progress
-- After 3 re-fires (total 4 relay attempts), the agent is **frozen** as DEAD_AGENT
+- After 3 re-fires (total 4 relay attempts), the agent is **paused** as DEAD_AGENT
 - The orchestrator (caller_session) is notified via send_to
 
 ### What triggers done-verify

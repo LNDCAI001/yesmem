@@ -90,8 +90,12 @@ func (h *Handler) handleTrackStreamState(params map[string]any) Response {
 // so get_agent can look up stream state.
 func (h *Handler) mapSessionToThread(threadID, project string) {
 	// Try to find the agent by its session matching this threadID.
-	// For opencode: threadID = "opencode:ses_xxx", agent.session_id = UUID.
-	// The optimistic match works when session_id == threadID (Claude Code).
+	// For opencode: threadID = "opencode:ses_xxx", agent.session_id = UUID,
+	// but agent.opencode_session_id = "ses_xxx". The storage-layer lookup
+	// (AgentGetAnyBySession) matches on all three columns and strips the
+	// "opencode:"/"codex:" prefix, so the optimistic match succeeds for
+	// claude/opencode/codex backends alike. The fallback below is only hit
+	// for genuinely unknown threadIDs.
 	agent, err := h.store.AgentGetAnyBySession(threadID)
 	if err == nil && agent != nil {
 		sessionToThreadMu.Lock()

@@ -104,6 +104,9 @@ func TestIsFeatureEnabled_AllGates(t *testing.T) {
 				RulesReminder:  false,
 				PlanCheckpoint: true,
 				ThinkReminder:  false,
+				Timestamps:     true,
+				AssocContext:   false,
+				LoopWarning:    true,
 			},
 		},
 	}
@@ -116,6 +119,9 @@ func TestIsFeatureEnabled_AllGates(t *testing.T) {
 		{"rules_reminder", false},
 		{"plan_checkpoint", true},
 		{"think_reminder", false},
+		{"timestamps", true},
+		{"assoc_context", false},
+		{"loop_warning", true},
 	}
 	for _, tt := range tests {
 		if got := isFeatureEnabled(cfg, "deepseek", tt.feature); got != tt.want {

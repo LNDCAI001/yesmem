@@ -29,9 +29,10 @@ type openAIRequestContext struct {
 	EstimatedTokens int
 	MessageCount    int
 	Subagent        bool
-	SawtoothCutoff  int // raw index where frozen stubs end (= fresh tail start)
-	SawtoothStubs   int // number of frozen stubs in combined array
-	RawMsgCount     int // total messages before sawtooth compaction
+	SawtoothCutoff  int    // raw index where frozen stubs end (= fresh tail start)
+	SawtoothStubs   int    // number of frozen stubs in combined array
+	RawMsgCount     int    // total messages before sawtooth compaction
+	LoopWarning     string // stashed by loop detection, merged into TimestampMeta during entry assembly
 }
 
 func (s *Server) ensureOpenAIRuntimeState() {
@@ -58,6 +59,12 @@ func (s *Server) ensureOpenAIRuntimeState() {
 		s.skillTracker = newSkillHintTracker()
 	}
 	s.mu.Unlock()
+
+	s.loopMu.Lock()
+	if s.loopStates == nil {
+		s.loopStates = make(map[string]*LoopState)
+	}
+	s.loopMu.Unlock()
 
 	s.thinkMu.Lock()
 	if s.thinkCounters == nil {
@@ -232,6 +239,27 @@ func (s *Server) runOpenAIParityPipeline(req map[string]any, ctx *openAIRequestC
 		go s.queryDaemon("invalidate_on_commit", map[string]any{
 			"hash": ci.Hash, "project": ctx.Project, "workdir": workdir,
 		})
+	}
+
+	// Loop detection: check for repeating tool-call patterns and stash warning.
+	// The warning is merged into the last user message's TimestampMeta during
+	// annotateOpenAIMessageMetadata — cache-safe via freeze-once-replay.
+	// Mirrors the handleMessages wiring at proxy.go:1176-1190.
+	if ctx.ThreadID != "" && !ctx.Retry && isFeatureEnabled(&s.cfg, model, "loop_warning") {
+		s.loopMu.Lock()
+		loopState := s.loopStates[ctx.ThreadID]
+		if loopState == nil {
+			loopState = &LoopState{}
+			s.loopStates[ctx.ThreadID] = loopState
+		}
+		s.loopMu.Unlock()
+
+		if warning, level := CheckLoopAndFormat(messages, loopState); warning != "" {
+			ctx.LoopWarning = warning
+			if s.logger != nil {
+				s.logger.Printf("%s[req %d %s tid=%s] LOOP: level %d warning stashed (cached via TimestampMeta)%s", colorOrange, ctx.ReqIdx, ctx.Project, ctx.ThreadID, level, colorReset)
+			}
+		}
 	}
 
 	if ctx.Subagent {
@@ -614,8 +642,29 @@ func (s *Server) annotateOpenAIMessageMetadata(req map[string]any, ctx *openAIRe
 						entry.AssocContext = ac
 					}
 				}
+				entry.LoopWarning = ctx.LoopWarning
+
+				// Plan checkpoint: detect plan tool calls (resets counter), inject reminder if interval fires
+				if isFeatureEnabled(&s.cfg, model, "plan_checkpoint") {
+					s.detectPlanToolCall(messages, ctx.ThreadID, totalTokens)
+					if checkpoint := s.planCheckpointInject(ctx.ThreadID, totalTokens); checkpoint != "" {
+						entry.PlanCheckpoint = checkpoint
+						if s.logger != nil {
+							s.logger.Printf("%s[req %d %s tid=%s] plan checkpoint stashed (cached via TimestampMeta)%s", colorBlue, ctx.ReqIdx, ctx.Project, ctx.ThreadID, colorReset)
+						}
+					}
+				}
+
+				// Docs hint: inject docs-available reminder if interval fires
+				if docsHint := s.docsHintInject(ctx.ThreadID, totalTokens, ctx.Project); docsHint != "" {
+					entry.DocsHint = docsHint
+					if s.logger != nil {
+						s.logger.Printf("%s[req %d %s tid=%s] docs hint stashed (cached via TimestampMeta)%s", colorBlue, ctx.ReqIdx, ctx.Project, ctx.ThreadID, colorReset)
+					}
+				}
+
 				s.timestampStore.Store(threadID, ctx.RawMsgCount, entry)
-				if isFeatureEnabled(&s.cfg, model, "timestamps") {
+				if isFeatureEnabled(&s.cfg, model, "timestamps") || entry.LoopWarning != "" || entry.PlanCheckpoint != "" || entry.DocsHint != "" {
 					prependMeta(lastMsg, BuildMeta(ctx.RawMsgCount, entry))
 				}
 			}

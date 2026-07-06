@@ -28,6 +28,9 @@ type TimestampMeta struct {
 	Rules          string `json:"ru,omitempty"` // rules reminder text (stored once, replayed idempotent)
 	AssocContext   string `json:"ac,omitempty"` // associative context from hybrid_search (stored once, replayed idempotent)
 	DocContext     string `json:"dc,omitempty"` // doc context from docs_search (stored once, replayed idempotent)
+	LoopWarning    string `json:"lw,omitempty"` // loop detection warning (stored once, replayed idempotent)
+	PlanCheckpoint string `json:"pc,omitempty"` // plan checkpoint reminder (stored once, replayed idempotent)
+	DocsHint       string `json:"dh,omitempty"` // docs hint reminder (stored once, replayed idempotent)
 }
 
 // TimestampHint is prepended once as a system-prompt block explaining the
@@ -157,6 +160,15 @@ func BuildMeta(msgN int, meta *TimestampMeta) string {
 		}
 		if meta.DocContext != "" {
 			parts = append(parts, "[doc-context] "+meta.DocContext)
+		}
+		if meta.LoopWarning != "" {
+			parts = append(parts, "[loop-warning] "+meta.LoopWarning)
+		}
+		if meta.PlanCheckpoint != "" {
+			parts = append(parts, "[plan-checkpoint] "+meta.PlanCheckpoint)
+		}
+		if meta.DocsHint != "" {
+			parts = append(parts, "[docs-hint] "+meta.DocsHint)
 		}
 	}
 

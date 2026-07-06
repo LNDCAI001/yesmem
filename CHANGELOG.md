@@ -9,6 +9,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Restore informative EN descriptions for all 70 MCP tools
+- Add DeepL language backfill script + 46 unit tests
+- Add LANGUAGE directive to all prompts + bilingual search
+
+### Changed
+
+- Align RPC method name list_doc_sources with MCP tool list_docs
+
+### Fixed
+
+- Neutralize private paths in storage/embedding tests
+- Neutralize  paths in storage tests
+- Use /tmp instead of t.TempDir for unix socket paths
+- Reframe get_code_context description to blast-radius framing
+- Add claim_and_read to cap_store top-level description
+- Drop ai-jail impl detail from execute_cap description (restore b6dfb545)
+- Align 4 tool descriptions with actual implementation
+- Storage-side RRF fusion, deterministic tiebreak, MCP descriptions
+
+### Documentation
+
+- Add recent yesloop plan files (loop-warning, bm25-filter, language-backfill, language-harmonization-en)
+- Sync mcp-tools-reference.md with restored descriptions
+
+## [2.2.5] - 2026-07-05
+
+### Added
+
+- Log every silent failure path in backend session capture
+- Route plan-checkpoint + docs-hint through TimestampMeta
+- Add PlanCheckpoint + DocsHint fields to TimestampMeta
+- Parallel-safe identity via ENV injection + PID DB fallback
+- Add loop_warning + glm block to feature-gate template
+- Modernize modelFeaturesBlock template to 9-key form
+- Per-key gate migration for existing model_features
+- Inject loop-warning cache-safe via TimestampMeta last-user-msg
+
+### Changed
+
+- Split agent status "frozen" into paused/stopped
+
+### Fixed
+
+- Allow 1-token BM25 queries (variable name search)
+- Tolerant project filter for BM25, AQ, and vector paths
+- Don't serve or cache cwd-dependent ambiguity errors
+- Resolve short names to full paths with cwd tiebreaker
+- Gofmt indentation; use hasMetaInMessage in tests (cold review fixes)
+- Route plan-checkpoint + docs-hint through TimestampMeta freeze-once
+- Create missing feature_defaults, tolerant top-level header
+- Resolve spawned opencode/codex agents via backend session ids
+- Handle inline-comment headers in per-key migration
+- Remove hs_nudge — non-idempotent nudge busted prefix cache
+- Wire loop detection into OpenAI-parity pipeline
+- Busy_timeout 5000 → 30000 for multi-writer contention
+- Code-describe max_tokens 1024 → 8192 for DeepSeek V4 reasoning
+
+### Documentation
+
+- Unreleased backfill + hs_nudge removal entry
+- Yesloop Phase 6 send_to marker convention + plans + reddit post
+
+## [2.2.4] - 2026-07-01
+
+### Added
+
 - Scratchpad_append MCP tool + skill discipline rules
 - DONE-Gate Hardening + MANDATORY sharpening
 - 12 review-fixes (locking, union, fallback, crash-recovery)
@@ -3104,7 +3170,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive tests for generator and storage
 
 
-[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.2.3...HEAD
+[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.2.5...HEAD
+[2.2.5]: https://github.com/carsteneu/yesmem/compare/v2.2.4...v2.2.5
+[2.2.4]: https://github.com/carsteneu/yesmem/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/carsteneu/yesmem/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/carsteneu/yesmem/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/carsteneu/yesmem/compare/v2.2.0...v2.2.1

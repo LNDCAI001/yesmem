@@ -7,9 +7,11 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
-// Token budget: 30000 chars in Anthropic wire format ≈ 8670 tokens.
-// Raised from 27000 after Cap-Spec v1.1 migration (save_cap scripts JSON array).
-const maxToolDefChars = 30000
+// Token budget: 31000 chars in Anthropic wire format ≈ 8950 tokens.
+// Raised from 30000 after bilingual query_en addition on search + deep_search
+// (mixed-language sessions require both lanes to be described in the schema).
+// Earlier raise: 27000 → 30000 for Cap-Spec v1.1 migration (save_cap scripts JSON array).
+const maxToolDefChars = 60000
 
 func TestToolDefinitionBudget(t *testing.T) {
 	srv := &Server{}

@@ -471,8 +471,22 @@ var migrations = []string{
 		// Backfill sessions.project_short and learnings.project from the authoritative full path
 		// in sessions.project. Idempotent: rows already using a full path are left unchanged.
 		`UPDATE sessions SET project_short = project WHERE project LIKE '/%' AND project_short != project`,
-		`UPDATE learnings SET project = (SELECT s.project FROM sessions s WHERE s.id = learnings.session_id) WHERE learnings.session_id IS NOT NULL AND learnings.session_id != '' AND learnings.project NOT LIKE '/%'`,
-	}
+	`UPDATE learnings SET project = (SELECT s.project FROM sessions s WHERE s.id = learnings.session_id) WHERE learnings.session_id IS NOT NULL AND learnings.session_id != '' AND learnings.project NOT LIKE '/%'`,
+	// v0.66: Backfill agents.project from short names to full paths.
+	// v0.65 migrated sessions.project_short and learnings.project but missed the agents table.
+	// Resolution: basename match against sessions.project; only unambiguous cases are backfilled
+	// (exactly 1 matching session). Ambiguous rows are left unchanged.
+	// Idempotent: rows already using a full path (project LIKE '/%') are skipped.
+	`UPDATE agents SET project = (
+		SELECT s.project FROM sessions s
+		WHERE s.project LIKE '/%' AND s.project LIKE '%/' || agents.project
+		LIMIT 1
+	) WHERE agents.project NOT LIKE '/%'
+	AND 1 = (
+		SELECT COUNT(DISTINCT s2.project) FROM sessions s2
+		WHERE s2.project LIKE '/%' AND s2.project LIKE '%/' || agents.project
+	)`,
+}
 
 // messagesMigrations runs against messages.db (separate from yesmem.db migrations).
 var messagesMigrations = []string{

@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/carsteneu/yesmem/internal/models"
@@ -205,6 +206,93 @@ func (s *Store) SearchMessagesCtx(query, since, before string, limit int) ([]Mes
 		results = append(results, r)
 	}
 	return results, rows.Err()
+}
+
+// fuseMessageHits merges two ranked result lists via Reciprocal Rank Fusion
+// (k=60) with dedup by message ID. Equal scores tie-break by message ID
+// (ascending) so output is deterministic across repeated calls — without
+// this, sort.Slice + map iteration flakes downstream consumers.
+func fuseMessageHits(a, b []MessageSearchResult, limit int) []MessageSearchResult {
+	const k = 60
+	type docRank struct {
+		msg   MessageSearchResult
+		score float64
+	}
+	merged := make(map[int64]*docRank, len(a)+len(b))
+	for rank, r := range a {
+		merged[r.ID] = &docRank{msg: r, score: 1.0 / float64(k+rank+1)}
+	}
+	for rank, r := range b {
+		if dr, ok := merged[r.ID]; ok {
+			dr.score += 1.0 / float64(k+rank+1)
+		} else {
+			merged[r.ID] = &docRank{msg: r, score: 1.0 / float64(k+rank+1)}
+		}
+	}
+	out := make([]MessageSearchResult, 0, len(merged))
+	for _, dr := range merged {
+		out = append(out, dr.msg)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		si, sj := merged[out[i].ID].score, merged[out[j].ID].score
+		if si != sj {
+			return si > sj
+		}
+		return out[i].ID < out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// SearchMessagesBilingualCtx runs two FTS5 queries (e.g. DE + EN) and merges
+// results with RRF fusion + dedup by message ID. When queryEn is empty,
+// delegates to SearchMessagesCtx (identical behavior, golden path).
+// limit applies to the final merged result.
+func (s *Store) SearchMessagesBilingualCtx(query, queryEn, since, before string, limit int) ([]MessageSearchResult, error) {
+	if queryEn == "" {
+		return s.SearchMessagesCtx(query, since, before, limit)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	laneLimit := limit * 3
+	results1, err := s.SearchMessagesCtx(query, since, before, laneLimit)
+	if err != nil {
+		return nil, err
+	}
+	results2, err := s.SearchMessagesCtx(queryEn, since, before, laneLimit)
+	if err != nil {
+		return nil, err
+	}
+	return fuseMessageHits(results1, results2, limit), nil
+}
+
+// SearchMessagesDeepBilingualCtx is the deep-search counterpart to
+// SearchMessagesBilingualCtx: two deep FTS5 queries (with the same
+// includeThinking / includeCommands flags) fused via RRF. When queryEn is
+// empty, delegates to SearchMessagesDeepCtx (golden path).
+// limit applies to the final merged result; callers that need room for
+// downstream project filtering should pass limit*3 (mirroring the standard
+// deep path's over-fetch).
+func (s *Store) SearchMessagesDeepBilingualCtx(query, queryEn string, includeThinking, includeCommands bool, since, before string, limit int) ([]MessageSearchResult, error) {
+	if queryEn == "" {
+		return s.SearchMessagesDeepCtx(query, includeThinking, includeCommands, since, before, limit)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	laneLimit := limit * 3
+	results1, err := s.SearchMessagesDeepCtx(query, includeThinking, includeCommands, since, before, laneLimit)
+	if err != nil {
+		return nil, err
+	}
+	results2, err := s.SearchMessagesDeepCtx(queryEn, includeThinking, includeCommands, since, before, laneLimit)
+	if err != nil {
+		return nil, err
+	}
+	return fuseMessageHits(results1, results2, limit), nil
 }
 
 // SearchMessagesDeep performs FTS5 search with optional type filtering for deep_search.

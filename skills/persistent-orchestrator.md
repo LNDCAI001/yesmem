@@ -50,8 +50,8 @@ For each task, run these stages in order:
 
 2. Spawn or resume:
    existing = AgentGetActiveBySection(project, "implementer")
-   if existing and status in (stopped, frozen):
-       resume_agent(to="implementer", project=project)
+   if existing and status in (stopped, paused):
+        resume_agent(to="implementer", project=project)
    else if no record or status=error:
        spawn_agent(project, section="implementer", max_turns=1000, token_budget=500000, model="sonnet",
                    prompt="Read your task: scratchpad_read(section='auftrag-implementer') then implement it. When done, write result to scratchpad section 'implementer-result' and send_to me.")
@@ -128,7 +128,7 @@ Always prefer resume over fresh spawn:
 ```
 function spawn_or_resume(section, spawn_params):
     agent = AgentGetActiveBySection(project, section)
-    if agent and agent.status in (stopped, frozen):
+    if agent and agent.status in (stopped, paused):
         resume_agent(to=agent.id)
         return
     if no agent or agent.status in (error, failed):

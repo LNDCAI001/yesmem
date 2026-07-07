@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Gitignore backfill_state.json and scripts/__pycache__
+
+### Fixed
+
+- Mandate skill-read in scratchpad + relay kick
+- Default tools=true for opencode subprocess calls
+
+### Documentation
+
+- Update CHANGELOG for v2.3.0 changes
+
+## [2.3.0] - 2026-07-06
+
 ### Added
 
 - Restore informative EN descriptions for all 70 MCP tools
@@ -3170,7 +3185,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive tests for generator and storage
 
 
-[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.2.5...HEAD
+[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/carsteneu/yesmem/compare/v2.2.5...v2.3.0
 [2.2.5]: https://github.com/carsteneu/yesmem/compare/v2.2.4...v2.2.5
 [2.2.4]: https://github.com/carsteneu/yesmem/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/carsteneu/yesmem/compare/v2.2.2...v2.2.3

@@ -23,6 +23,10 @@ type Server struct {
 	mu      sync.Mutex
 }
 
+// contentLangDirective is appended to descriptions of content-writing tools.
+// Keeps generated content English-consistent regardless of conversation language.
+const contentLangDirective = " LANGUAGE: write content in English, regardless of conversation language. Technical tokens (JSON fields, code, commands, identifiers) remain verbatim — never translate them."
+
 // New creates an MCP server. Connection to daemon is established lazily
 // on first tool call, so the MCP server always starts successfully.
 func New(dataDir string) (*Server, error) {
@@ -872,7 +876,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("remember",
-			mcplib.WithDescription("Save a lasting learning to persistent memory. Use after discovering a gotcha, making a decision, identifying a pattern, or receiving user feedback. Include structured metadata (entities, actions, trigger, anticipated_queries) for better retrieval. Model auto-resolved via param/YESMEM_MODEL_ID/proxy_state."),
+			mcplib.WithDescription("Save a lasting learning to persistent memory. Use after discovering a gotcha, making a decision, identifying a pattern, or receiving user feedback. Include structured metadata (entities, actions, trigger, anticipated_queries) for better retrieval. Model auto-resolved via param/YESMEM_MODEL_ID/proxy_state."+contentLangDirective),
 			mcplib.WithString("text", mcplib.Required(), mcplib.Description("Content to remember")),
 			mcplib.WithString("category", mcplib.Description("gotcha|decision|pattern|preference|explicit_teaching|strategic")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
@@ -892,7 +896,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("pin",
-			mcplib.WithDescription("Pin a persistent instruction visible in every turn. Use for rules, constraints, or context that must survive context collapse. Scope: session (temporary) or permanent. Remove with unpin."),
+			mcplib.WithDescription("Pin a persistent instruction visible in every turn. Use for rules, constraints, or context that must survive context collapse. Scope: session (temporary) or permanent. Remove with unpin."+contentLangDirective),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Instruction to pin")),
 			mcplib.WithString("scope", mcplib.Description("session|permanent")),
 			mcplib.WithString("project", mcplib.Description("Project filter")),
@@ -991,7 +995,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("save_cap",
-			mcplib.WithDescription("Save an executable capability (tool definition) that persists across sessions. Use to create reusable tools from working REPL snippets, bash commands, or multi-step workflows. Auto-supersedes existing caps with the same name. Scripts array supports tool (REPL) and handler (bash/JS) kinds."),
+			mcplib.WithDescription("Save an executable capability (tool definition) that persists across sessions. Use to create reusable tools from working REPL snippets, bash commands, or multi-step workflows. Auto-supersedes existing caps with the same name. Scripts array supports tool (REPL) and handler (bash/JS) kinds."+contentLangDirective),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Capability name (e.g. 'reddit_fetch')")),
 			mcplib.WithString("description", mcplib.Description("What the cap does")),
 			mcplib.WithString("scripts", mcplib.Required(), mcplib.Description("JSON array of script objects (Cap-Spec v1.1). Each: {name, kind: 'tool'|'handler', runtime: 'repl'|'bash', body, schema?}. At least one kind='tool' script required.")),
@@ -1106,7 +1110,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("set_persona",
-			mcplib.WithDescription("Set a persona trait for the user profile. Use to record user preferences, expertise levels, or communication style. Dimension is auto-detected if empty."),
+			mcplib.WithDescription("Set a persona trait for the user profile. Use to record user preferences, expertise levels, or communication style. Dimension is auto-detected if empty."+contentLangDirective),
 			mcplib.WithString("trait_key", mcplib.Required(), mcplib.Description("Trait key")),
 			mcplib.WithString("value", mcplib.Required(), mcplib.Description("Value")),
 			mcplib.WithString("dimension", mcplib.Description("Auto-detected if empty")),
@@ -1252,7 +1256,7 @@ func (s *Server) registerTools() {
 	// ━━━ Scratchpad tools ━━━
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_write",
-			mcplib.WithDescription("Write a section to the shared persistent scratchpad (upsert). Use for cross-session state, agent coordination, or storing intermediate results. Project and section are required."),
+			mcplib.WithDescription("Write a section to the shared persistent scratchpad (upsert). Use for cross-session state, agent coordination, or storing intermediate results. Project and section are required."+contentLangDirective),
 			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
 			mcplib.WithString("section", mcplib.Required(), mcplib.Description("Section name")),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Section content")),

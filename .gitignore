@@ -37,3 +37,5 @@ bunfig.toml
 yesmem_demo*.cast
 **/PACKAGE.md
 --help/
+backfill_state.json
+scripts/__pycache__/

@@ -18,10 +18,12 @@ When invoked from an interactive session, **do NOT execute the pipeline yourself
    - Isolates agent changes from your working directory
    - Multiple agents can run in parallel without conflicts
    - Easy cleanup: delete worktree + branch if abandoned
-2. Write the task to scratchpad with worktree path: `scratchpad_write(project="<project>", section="yesloop-<task-slug>", content="Worktree: <path>\nTask: <description>\n\nUse the yesloop autonomous pipeline (6 phases). Report to scratchpad.")`
+2. Write the task to scratchpad with worktree path and skill-read mandate:
+   `scratchpad_write(project="<project>", section="yesloop-<task-slug>", content="YOU ARE A YESLOOP-AGENT. Load the yesloop skill: use your platform's skill tool, or read ~/.claude/skills/yesloop/SKILL.md, or <repo-root>/skills/bundled-skills/yesloop/SKILL.md. Follow the 6-phase pipeline (ANALYZE → PLAN → EXECUTE → VERIFY → REVIEW → FINISH).\n\nWorktree: <path>\nTask: <description>\n\nReport to scratchpad.")`
+   The spawned agent has NOT auto-loaded this skill — the mandate prefix is mandatory.
 3. Spawn TUI agent: `yesmem_spawn_agent(project="<project>", section="yesloop-<task-slug>", backend="opencode", work_dir="<worktree-path>")`
 4. Wait 15s for opencode TUI to load + PTY injection to deliver the startup prompt
-5. **Relay kick (backup):** `yesmem_relay_agent(to="<agent-id>", content="Read scratchpad and begin yesloop pipeline.")` — backup if PTY is slow
+5. **Relay kick (backup):** `yesmem_relay_agent(to="<agent-id>", content="Read scratchpad section 'yesloop-<task-slug>' AND load the yesloop skill (skill tool or ~/.claude/skills/yesloop/SKILL.md). Begin 6-phase pipeline.\n")` — backup if PTY is slow
 6. Confirm: "Agent spawned in worktree — sichtbar im Terminal."
 
 **Only run inline if:** user explicitly says `--inline` or task is < 2 min trivial.
@@ -45,6 +47,7 @@ Unknown bare names log a warning and pass through unchanged (best-effort, no err
 When you spawn a yesloop agent, the scratchpad task defines the working relationship. Over-prescribing takes ANALYZE+PLAN away from the agent; under-prescribing sends it into orientation loops. Get the level right.
 
 **Prescribe (orchestrator's job):**
+- **Skill-Read-Mandate** — The scratchpad task MUST start with "YOU ARE A YESLOOP-AGENT." and instruct the agent to load the yesloop skill. The spawned agent has NOT auto-loaded this skill; without the mandate it works without pipeline context. Path fallbacks: platform skill tool, `~/.claude/skills/yesloop/SKILL.md`, or `<repo-root>/skills/bundled-skills/yesloop/SKILL.md`.
 - **Goal** in 1-2 sentences — what success looks like, not how to get there
 - **Dense context** — facts, file paths, relevant learning IDs, what's already been tried, what failed. The agent starts cold; you don't.
 - **Hard constraints** — schema-breaking changes, backfills, new dependencies, destructive ops, files off-limits

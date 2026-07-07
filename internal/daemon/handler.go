@@ -220,9 +220,9 @@ func (h *Handler) resolveProjectParam(params map[string]any) map[string]any {
 
 const ambiguousPrefix = "__ambiguous__:"
 
-func ambiguousMarker(msg string) string  { return ambiguousPrefix + msg }
-func isAmbiguousMarker(s string) bool     { return strings.HasPrefix(s, ambiguousPrefix) }
-func stripMarker(s string) string         { return strings.TrimPrefix(s, ambiguousPrefix) }
+func ambiguousMarker(msg string) string { return ambiguousPrefix + msg }
+func isAmbiguousMarker(s string) bool   { return strings.HasPrefix(s, ambiguousPrefix) }
+func stripMarker(s string) string       { return strings.TrimPrefix(s, ambiguousPrefix) }
 
 type idleState struct {
 	count    int
@@ -711,6 +711,12 @@ func (h *Handler) handleLLMComplete(params map[string]any) Response {
 	}
 	if sessionID != "" {
 		opts = append(opts, extraction.WithSession(sessionID))
+	}
+	// Default to enabling MCP tools for opencode subprocess calls. The Telegram
+	// cap and other llm-builtin callers send no tools flag but expect tool
+	// access for sensible replies. Explicit tools=false still wins.
+	if provider == "opencode" && !tools {
+		tools = true
 	}
 	if tools {
 		opts = append(opts, extraction.WithTools())

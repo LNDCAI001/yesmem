@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- DRY description constants for project/since/before/limit params
+
+### Fixed
+
+- Use generic example path in filter descriptions (security scan)
+
+### Documentation
+
+- Unreleased entries for v2.3.1 fixes
+
+## [2.3.1] - 2026-07-07
+
 ### Changed
 
 - Gitignore backfill_state.json and scripts/__pycache__
@@ -3185,7 +3199,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive tests for generator and storage
 
 
-[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/carsteneu/yesmem/compare/v2.3.1...HEAD
+[2.3.1]: https://github.com/carsteneu/yesmem/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/carsteneu/yesmem/compare/v2.2.5...v2.3.0
 [2.2.5]: https://github.com/carsteneu/yesmem/compare/v2.2.4...v2.2.5
 [2.2.4]: https://github.com/carsteneu/yesmem/compare/v2.2.3...v2.2.4

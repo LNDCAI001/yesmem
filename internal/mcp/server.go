@@ -27,6 +27,16 @@ type Server struct {
 // Keeps generated content English-consistent regardless of conversation language.
 const contentLangDirective = " LANGUAGE: write content in English, regardless of conversation language. Technical tokens (JSON fields, code, commands, identifiers) remain verbatim — never translate them."
 
+// Description constants for common filter parameters. Using DRY constants
+// ensures consistent guidance across all MCP tools.
+const (
+	projectFilterDesc    = "Full working directory path (e.g., /home/user/projects/my-app). Always set this to your current working directory — short names like 'my-app' may be ambiguous across multiple projects and trigger a cwd-based tiebreaker in the daemon. Leave empty only for cross-project searches."
+	projectRequiredDesc  = "Full working directory path (e.g., /home/user/projects/my-app). Always set this to your current working directory — short names like 'my-app' are ambiguous across projects."
+	sinceDesc            = "ISO 8601 date-time lower bound (inclusive), e.g. '2026-07-01' or '2026-07-01T00:00:00Z'. Items at or after this timestamp."
+	beforeDesc           = "ISO 8601 date-time upper bound (exclusive), e.g. '2026-07-07'. Items strictly before this timestamp."
+	limitDesc            = "Maximum number of results to return. Default depends on tool (typically 10-100)."
+)
+
 // New creates an MCP server. Connection to daemon is established lazily
 // on first tool call, so the MCP server always starts successfully.
 func New(dataDir string) (*Server, error) {
@@ -868,10 +878,10 @@ func (s *Server) registerTools() {
 			mcplib.WithDescription("Full-text search across conversation logs. Use when you need specific phrases, commands, or error messages from past sessions. Returns matching messages with session ID and timestamp. For semantic search use hybrid_search, for raw conversation content use deep_search."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Query in your working language.")),
 			mcplib.WithString("query_en", mcplib.Description("English translation of query.")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
-			mcplib.WithString("since", mcplib.Description("ISO date lower bound")),
-			mcplib.WithString("before", mcplib.Description("ISO date upper bound")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
+			mcplib.WithString("since", mcplib.Description(sinceDesc)),
+			mcplib.WithString("before", mcplib.Description(beforeDesc)),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 		), s.proxyCallFormat("search", formatSearchResult))
 
 	s.srv.AddTool(
@@ -879,7 +889,7 @@ func (s *Server) registerTools() {
 			mcplib.WithDescription("Save a lasting learning to persistent memory. Use after discovering a gotcha, making a decision, identifying a pattern, or receiving user feedback. Include structured metadata (entities, actions, trigger, anticipated_queries) for better retrieval. Model auto-resolved via param/YESMEM_MODEL_ID/proxy_state."+contentLangDirective),
 			mcplib.WithString("text", mcplib.Required(), mcplib.Description("Content to remember")),
 			mcplib.WithString("category", mcplib.Description("gotcha|decision|pattern|preference|explicit_teaching|strategic")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 			mcplib.WithString("model", mcplib.Description("Optional override; auto-resolved when omitted.")),
 			mcplib.WithString("source", mcplib.Description("user_stated|agreed_upon|claude_suggested")),
 			mcplib.WithString("origin", mcplib.Description("Origin tag for trust scoring (e.g. manual, repl_command)")),
@@ -899,7 +909,7 @@ func (s *Server) registerTools() {
 			mcplib.WithDescription("Pin a persistent instruction visible in every turn. Use for rules, constraints, or context that must survive context collapse. Scope: session (temporary) or permanent. Remove with unpin."+contentLangDirective),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Instruction to pin")),
 			mcplib.WithString("scope", mcplib.Description("session|permanent")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCallFormat("pin", formatPin))
 
 	s.srv.AddTool(
@@ -912,7 +922,7 @@ func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("get_pins",
 			mcplib.WithDescription("List all active pinned instructions. Use to review current pins before adding or removing. Filter by project."),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCall("get_pins"))
 
 	// Agent-to-Agent Channel Messaging (fire-and-forget, no dialog state)
@@ -927,14 +937,14 @@ func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("whoami",
 			mcplib.WithDescription("Get your own session ID and agent metadata. Use at startup to discover your identity for send_to callbacks and to confirm your agent context (section, project, backend session ID)."),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCallWithThreadID("whoami", nil))
 
 	s.srv.AddTool(
 		mcplib.NewTool("broadcast",
 			mcplib.WithDescription("Send a message to all sessions in a project. Use for announcements, status updates, or coordination across all active sessions."),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Message")),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 		), s.proxyCallFormat("broadcast", formatBroadcast))
 
 	s.srv.AddTool(
@@ -944,10 +954,10 @@ func (s *Server) registerTools() {
 			mcplib.WithString("query_en", mcplib.Description("English translation of query.")),
 			mcplib.WithBoolean("include_thinking", mcplib.Description("Include thinking blocks")),
 			mcplib.WithBoolean("include_commands", mcplib.Description("Include command outputs")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
-			mcplib.WithString("since", mcplib.Description("ISO date lower bound")),
-			mcplib.WithString("before", mcplib.Description("ISO date upper bound")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
+			mcplib.WithString("since", mcplib.Description(sinceDesc)),
+			mcplib.WithString("before", mcplib.Description(beforeDesc)),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 		), s.proxyCallFormatLarge("deep_search", formatSearchResult))
 
 	s.srv.AddTool(
@@ -967,7 +977,7 @@ func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("project_summary",
 			mcplib.WithDescription("Get a chronological project summary with recent sessions and activity. Use to understand what's been happening in a project recently."),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithNumber("limit", mcplib.Description("Max sessions")),
 		), s.proxyCallFormat("project_summary", formatSimpleMessage))
 
@@ -977,20 +987,20 @@ func (s *Server) registerTools() {
 			mcplib.WithNumber("id", mcplib.Description("Get by ID (ignores other filters)")),
 			mcplib.WithBoolean("history", mcplib.Description("When true with id, returns full version chain (oldest-first)")),
 			mcplib.WithString("category", mcplib.Description("gotcha|decision|pattern|preference|explicit_teaching|strategic|narrative")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
-			mcplib.WithString("since", mcplib.Description("ISO date lower bound")),
-			mcplib.WithString("before", mcplib.Description("ISO date upper bound")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
+			mcplib.WithString("since", mcplib.Description(sinceDesc)),
+			mcplib.WithString("before", mcplib.Description(beforeDesc)),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 			mcplib.WithString("task_type", mcplib.Description("task|idea|blocked|stale")),
 		), s.proxyCallFormat("get_learnings", formatLearnings))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_caps",
 			mcplib.WithDescription("Load saved capability definitions. Use to discover available caps by name, tag, or project. Capabilities are reusable, tested tool definitions that persist across sessions."),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 			mcplib.WithString("name", mcplib.Description("Get specific cap by name")),
 			mcplib.WithString("tag", mcplib.Description("Filter by tag")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 		), s.proxyCallFormat("get_caps", formatSimpleMessage))
 
 	s.srv.AddTool(
@@ -1071,9 +1081,9 @@ func (s *Server) registerTools() {
 			mcplib.WithString("action", mcplib.Description("Action filter (LIKE match)")),
 			mcplib.WithString("keyword", mcplib.Description("Keyword filter (LIKE match)")),
 			mcplib.WithString("domain", mcplib.Description("code|marketing|legal|finance|general")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 			mcplib.WithString("category", mcplib.Description("Category filter")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 		), s.proxyCallFormat("query_facts", formatLearnings))
 
 	s.srv.AddTool(
@@ -1093,13 +1103,13 @@ func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("get_coverage",
 			mcplib.WithDescription("Show which files were edited in a project across all sessions. Use for project overview and to discover hotspots. For per-file session history use related_to_file."),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 		), s.proxyCallFormat("get_coverage", formatRelated))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_project_profile",
 			mcplib.WithDescription("Get an auto-generated project portrait. Use for quick project overview — surfaces key files, technologies, session counts, and active areas."),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 		), s.proxyCallLarge("get_project_profile"))
 
 	s.srv.AddTool(
@@ -1132,7 +1142,7 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("resolve_by_text",
 			mcplib.WithDescription("Find and resolve an unfinished task by searching its text content. Use after completing work when you don't have the learning ID at hand — matches against the learning's text field. Filters by project."),
 			mcplib.WithString("text", mcplib.Required(), mcplib.Description("Search text")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCallFormat("resolve_by_text", formatResolve))
 
 	s.srv.AddTool(
@@ -1178,10 +1188,10 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("hybrid_search",
 			mcplib.WithDescription("Combined BM25 keyword + vector semantic search for learning retrieval. Use as your primary memory access tool — provides the best balance of precision and recall. For raw conversation content use deep_search, for exact phrase matching use search."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
-			mcplib.WithString("since", mcplib.Description("ISO date lower bound")),
-			mcplib.WithString("before", mcplib.Description("ISO date upper bound")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
+			mcplib.WithString("since", mcplib.Description(sinceDesc)),
+			mcplib.WithString("before", mcplib.Description(beforeDesc)),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 		), s.proxyCallFormat("hybrid_search", formatSearchResult))
 
 	s.srv.AddTool(
@@ -1220,17 +1230,17 @@ func (s *Server) registerTools() {
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query")),
 			mcplib.WithString("source", mcplib.Description("Source name filter")),
 			mcplib.WithString("section", mcplib.Description("Section heading filter")),
-			mcplib.WithString("since", mcplib.Description("ISO date lower bound")),
-			mcplib.WithString("before", mcplib.Description("ISO date upper bound")),
+			mcplib.WithString("since", mcplib.Description(sinceDesc)),
+			mcplib.WithString("before", mcplib.Description(beforeDesc)),
 			mcplib.WithBoolean("exact", mcplib.Description("BM25 only, no vector search")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 			mcplib.WithString("doc_type", mcplib.Description("reference|style")),
 		), s.proxyCallFormat("docs_search", formatDocsSearchResult))
 
 	s.srv.AddTool(
 		mcplib.NewTool("list_docs",
 			mcplib.WithDescription("List all indexed documentation sources. Use to discover available reference docs before searching. Filter by project."),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCallFormat("list_docs", formatDocSources))
 
 	s.srv.AddTool(
@@ -1239,7 +1249,7 @@ func (s *Server) registerTools() {
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Source name")),
 			mcplib.WithString("path", mcplib.Required(), mcplib.Description("Path to index")),
 			mcplib.WithString("version", mcplib.Description("Version string")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 			mcplib.WithString("domain", mcplib.Description("code|marketing|legal|finance|general")),
 			mcplib.WithBoolean("rules", mcplib.Description("Condense into rules block for re-injection")),
 			mcplib.WithString("trigger_extensions", mcplib.Description("Auto-inject on file extensions (e.g. '.go,.mod')")),
@@ -1250,14 +1260,14 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("remove_docs",
 			mcplib.WithDescription("Remove a documentation source and its indexed data. Use when a doc source is outdated or no longer needed."),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Source name")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCallFormat("remove_docs", formatRemoveDocsResult))
 
 	// ━━━ Scratchpad tools ━━━
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_write",
 			mcplib.WithDescription("Write a section to the shared persistent scratchpad (upsert). Use for cross-session state, agent coordination, or storing intermediate results. Project and section are required."+contentLangDirective),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("section", mcplib.Required(), mcplib.Description("Section name")),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Section content")),
 		), s.proxyCallFormat("scratchpad_write", formatScratchpadWrite))
@@ -1265,20 +1275,20 @@ func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_read",
 			mcplib.WithDescription("Read scratchpad sections. Use to retrieve shared state, agent briefings, or stored results. Omit section to read all sections in a project."),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("section", mcplib.Description("Section (omit for all)")),
 		), s.proxyCallFormat("scratchpad_read", formatScratchpadRead))
 
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_list",
 			mcplib.WithDescription("List scratchpad projects and their sections. Use to discover available scratchpad state across projects."),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCallFormat("scratchpad_list", formatScratchpadList))
 
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_delete",
 			mcplib.WithDescription("Delete a scratchpad section or an entire project's scratchpad. Use for cleanup after work is done. Omit section to delete the entire project."),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("section", mcplib.Description("Section (omit to delete project)")),
 		), s.proxyCallFormat("scratchpad_delete", formatScratchpadDelete))
 
@@ -1286,7 +1296,7 @@ func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("spawn_agent",
 			mcplib.WithDescription("Spawn an autonomous agent for a project section. Use to delegate work to an isolated agent with its own worktree, model, and token budget. Agents run as visible TUI processes. Specify backend (claude|codex|opencode) and optional model override."),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("section", mcplib.Required(), mcplib.Description("Section name")),
 			mcplib.WithString("caller_session", mcplib.Description("Callback session")),
 			mcplib.WithNumber("token_budget", mcplib.Description("Token budget (0=default)")),
@@ -1301,7 +1311,7 @@ func (s *Server) registerTools() {
 			mcplib.WithDescription("Inject content into a running agent's terminal. Use to send instructions, nudges, or context to an agent without stopping it. Target by agent ID or section name."),
 			mcplib.WithString("to", mcplib.Required(), mcplib.Description("Agent ID or section")),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Message to inject")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 			mcplib.WithString("caller_session", mcplib.Description("Caller ID")),
 		), s.proxyCall("relay_agent"))
 
@@ -1309,13 +1319,13 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("stop_agent",
 			mcplib.WithDescription("Stop a running agent. Use to terminate an agent that has completed its work or is misbehaving. Target by agent ID."),
 			mcplib.WithString("to", mcplib.Required(), mcplib.Description("Agent ID")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCall("stop_agent"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("stop_all_agents",
 			mcplib.WithDescription("Stop all running agents in a project. Use for cleanup or when resetting a project's agent state."),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project name")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 		), s.proxyCall("stop_all_agents"))
 
 	s.srv.AddTool(
@@ -1328,14 +1338,14 @@ func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("list_agents",
 			mcplib.WithDescription("List all agents in a project with their status, PID, and section. Use to monitor running agents and discover their IDs for relay_agent or stop_agent."),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCall("list_agents"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_agent",
 			mcplib.WithDescription("Get detailed information about a specific agent. Use to check an agent's status, session ID, or worktree before sending commands via relay_agent or stop_agent."),
 			mcplib.WithString("to", mcplib.Required(), mcplib.Description("Agent ID or section")),
-			mcplib.WithString("project", mcplib.Description("Project filter")),
+			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 		), s.proxyCall("get_agent"))
 
 	s.srv.AddTool(
@@ -1350,26 +1360,26 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("search_code_index",
 			mcplib.WithDescription("Search the code graph for symbols (functions, types, methods, packages) by name pattern. Use for fast symbol lookups without filesystem access. For full-text code search use search_code."),
 			mcplib.WithString("pattern", mcplib.Required(), mcplib.Description("Substring match")),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("kind", mcplib.Description("function|type|method|package")),
 			mcplib.WithString("file_pattern", mcplib.Description("File path filter")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 		), s.proxyCall("search_code_index"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("search_code",
 			mcplib.WithDescription("Full-text search across source files, enriched with graph context. Use to find code by content — returns containing function and callers alongside matches. For symbol-by-name search use search_code_index."),
 			mcplib.WithString("pattern", mcplib.Required(), mcplib.Description("Text pattern")),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("file_pattern", mcplib.Description("Glob or substring filter")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results")),
+			mcplib.WithNumber("limit", mcplib.Description(limitDesc)),
 		), s.proxyCall("search_code"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_code_context",
 			mcplib.WithDescription("Get a symbol's signature plus its graph neighbors: who calls it, what it calls, what types it references. Use before refactoring or changing a function to understand the blast radius. For locating symbols by name use search_code_index, for full source use get_code_snippet."),
 			mcplib.WithString("qualified_name", mcplib.Required(), mcplib.Description("From search_code_index")),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithBoolean("include_neighbors", mcplib.Description("Include edges")),
 		), s.proxyCall("get_code_context"))
 
@@ -1377,7 +1387,7 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("get_code_snippet",
 			mcplib.WithDescription("Retrieve full source code for a symbol or arbitrary file range. Two modes: (1) qualified_name from search_code_index, (2) file + start_line + end_line for arbitrary ranges. Use as your primary code-reading tool instead of shell cat/read."),
 			mcplib.WithString("qualified_name", mcplib.Description("From search_code_index")),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("file", mcplib.Description("Relative file path for range mode")),
 			mcplib.WithNumber("start_line", mcplib.Description("Start line (1-based) for range mode")),
 			mcplib.WithNumber("end_line", mcplib.Description("End line (1-based, inclusive) for range mode")),
@@ -1387,14 +1397,14 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("get_file_symbols",
 			mcplib.WithDescription("List all top-level symbols in a file with line numbers. Use for quick file overview before diving into specific symbols. Returns func, method, var, const, type."),
 			mcplib.WithString("file", mcplib.Required(), mcplib.Description("Relative file path")),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 		), s.proxyCall("get_file_symbols"))
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_dependency_map",
 			mcplib.WithDescription("Generate a package import dependency graph with cycle detection. Use to understand module structure and identify circular dependencies before refactoring."),
 			mcplib.WithString("package", mcplib.Required(), mcplib.Description("Package name")),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithNumber("depth", mcplib.Description("Depth (default 2)")),
 		), s.proxyCall("get_dependency_map"))
 
@@ -1402,7 +1412,7 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("graph_traverse",
 			mcplib.WithDescription("Trace call paths and dependencies from a code graph node. Use to understand call chains, imports, or type definitions — follow inbound/outbound edges by type (calls, imports, defines)."),
 			mcplib.WithString("from", mcplib.Required(), mcplib.Description("Starting node")),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("direction", mcplib.Description("inbound|outbound|both")),
 			mcplib.WithString("edge_type", mcplib.Description("imports|defines|calls")),
 			mcplib.WithNumber("depth", mcplib.Description("Max depth")),
@@ -1411,7 +1421,7 @@ func (s *Server) registerTools() {
 	s.srv.AddTool(
 		mcplib.NewTool("get_file_index",
 			mcplib.WithDescription("List source files in a directory with learning and gotcha annotations. Use to browse a project's file structure and discover files with known issues or important context."),
-			mcplib.WithString("project", mcplib.Required(), mcplib.Description("Project")),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
 			mcplib.WithString("dir", mcplib.Description("Subdirectory to index (omit for project root)")),
 		), s.proxyCall("get_file_index"))
 

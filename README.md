@@ -364,3 +364,8 @@ YesMem is built and funded by [CCM19](https://ccm19.de), a German consent manage
 YesMem started as our internal fix. It's open source because we'd rather rely on a community-vetted tool than maintain a private fork forever. CCM19 funds full-time development and operates the project's infrastructure; the team that builds YesMem is the team that uses it daily.
 
 Papoo Software & Media GmbH, Bonn, Germany. In production since March 2026. Private development since November 2025, public since April 2026.
+
+## Star History
+
+<!-- my-star-history:start -->
+<!-- my-star-history:end -->

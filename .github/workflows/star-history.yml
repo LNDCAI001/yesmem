@@ -1,0 +1,18 @@
+name: Star History
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # daily; star counts move slowly
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  star-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: carsteneu/mystarhistory@main
+        with:
+          repos: ${{ github.repository }}

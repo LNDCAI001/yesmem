@@ -367,5 +367,7 @@ Papoo Software & Media GmbH, Bonn, Germany. In production since March 2026. Priv
 
 ## Star History
 
-<!-- my-star-history:start -->
-<!-- my-star-history:end -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/carsteneu/yesmem/star-history/assets/my-star-history/star-history-dark.svg">
+  <img alt="Star history" src="https://raw.githubusercontent.com/carsteneu/yesmem/star-history/assets/my-star-history/star-history-light.svg">
+</picture>

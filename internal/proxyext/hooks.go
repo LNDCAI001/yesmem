@@ -21,6 +21,14 @@ func Init(h Hooks) {
 	activeHooks = h
 }
 
+// HooksActive reports whether a real (non-noop) Hooks implementation is
+// installed. When false, smmForwardWithRetry short-circuits immediately and
+// the stock forwardWithAnnotation path is taken with zero extra allocations.
+func HooksActive() bool {
+	_, isNoop := activeHooks.(*noopHooks)
+	return !isNoop
+}
+
 // BeforeForward delegates to the active hooks implementation.
 // On error the caller should abort the forward.
 func BeforeForward(ctx context.Context, fc *ForwardContext) error {

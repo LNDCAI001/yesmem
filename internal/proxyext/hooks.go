@@ -33,18 +33,18 @@ func InitWithConfig(h Hooks, cfg SMMConfig) {
 }
 
 // HooksActive reports whether a real (non-noop) Hooks implementation is
-// installed. When false, smmForwardWithAnnotation short-circuits immediately
-// and the stock forwardWithAnnotation path is taken with zero extra allocations.
+// installed. When false, forwardWithSMM short-circuits immediately into
+// forwardWithAnnotation with zero extra allocations on the hot path.
 func HooksActive() bool {
 	_, isNoop := activeHooks.(*noopHooks)
 	return !isNoop
 }
 
 // MaxPreStreamRetries returns the configured maximum number of pre-stream
-// retries. Returns 2 (safe default) when SMM is disabled or unconfigured.
+// retries. Returns 0 when SMM is disabled (no retries, first attempt only).
 func MaxPreStreamRetries() int {
 	if !HooksActive() {
-		return 0 // noop: no retries, first attempt only
+		return 0
 	}
 	if activeCfg.AccountPool.MaxPreStreamRetries > 0 {
 		return activeCfg.AccountPool.MaxPreStreamRetries
@@ -85,4 +85,12 @@ func TransformStaticPayload(ctx context.Context, reqCtx RequestContext, ap *Asse
 		return nil // deliberately swallowed — caller proceeds with original body
 	}
 	return nil
+}
+
+// ResetForTesting resets the hook singleton to the noop default.
+// ONLY call this from *_test.go files. Never call in production code.
+// Provides safe parallel-test isolation for the activeHooks singleton.
+func ResetForTesting() {
+	activeHooks = &noopHooks{}
+	activeCfg = SMMConfig{}
 }

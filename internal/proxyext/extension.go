@@ -51,6 +51,10 @@ type smmHooks struct {
 
 // NewSMMHooks builds the real hooks implementation from SMMConfig.
 // Returns DefaultHooks() (noop) when disabled or misconfigured.
+//
+// staticplan.NewPlanner is only called when StaticPlan.Enabled is true AND
+// StaticPlan.Mode is not ModeOff. This ensures mode:off has zero allocation
+// cost — the planner nil-check in TransformStaticPayload is the kill switch.
 func NewSMMHooks(cfg SMMConfig) Hooks {
 	if !cfg.Enabled {
 		return DefaultHooks()
@@ -75,8 +79,13 @@ func NewSMMHooks(cfg SMMConfig) Hooks {
 		})
 	}
 
-	// Build static planner.
-	planner := staticplan.NewPlanner(cfg.StaticPlan)
+	// Build static planner only when explicitly enabled with a non-off mode.
+	// mode:off or enabled:false → planner stays nil → TransformStaticPayload
+	// returns immediately with zero allocations.
+	var planner *staticplan.Planner
+	if cfg.StaticPlan.Enabled && cfg.StaticPlan.Mode != staticplan.ModeOff {
+		planner = staticplan.NewPlanner(cfg.StaticPlan)
+	}
 
 	if pool == nil && planner == nil {
 		return DefaultHooks()
@@ -104,7 +113,7 @@ func (h *smmHooks) BeforeForward(ctx context.Context, fc *ForwardContext) error 
 		observability.RecordAuthFailure("<unknown>")
 		return err
 	}
-	// Store selected account in context — never on the outbound request.
+	// Store selected account in ForwardContext — never on the outbound request.
 	fc.SelectedAccount = acc
 	observability.RecordAccountSelected(acc.Name, fc.Attempt)
 	return nil
@@ -150,20 +159,56 @@ func (h *smmHooks) OnPostResponse(_ context.Context, fc *ForwardContext, result 
 	}
 }
 
+// TransformStaticPayload normalises or annotates the assembled prompt body
+// before it is forwarded. All paths fail open: on any error, panic, or
+// unexpected output, ap.RawBody is restored to its original value and the
+// request continues untransformed.
+//
+// Fail-open guarantees:
+//   - planner nil → immediate return, zero cost
+//   - subagent && !ApplyToSubagents → immediate return, metric emitted
+//   - Plan() returns !Eligible → immediate return, metric emitted
+//   - Apply() returns empty applied string or zero-length body → restore
+//     origBody, emit apply_noop_or_fail metric, return nil
+//   - panic inside Plan() or Apply() → caught by dispatcher in hooks.go,
+//     ap.RawBody is safe because assignment only occurs after nil/len checks
 func (h *smmHooks) TransformStaticPayload(_ context.Context, reqCtx RequestContext, ap *AssembledPrompt) error {
 	if h.planner == nil || ap == nil || len(ap.RawBody) == 0 {
 		return nil
 	}
+
+	// Explicit subagent bypass — never rely on Plan() internals for this.
+	if reqCtx.IsSubagent && !h.cfg.StaticPlan.ApplyToSubagents {
+		observability.RecordStaticPlan("noop", "subagent_bypass", true)
+		return nil
+	}
+
+	// Snapshot before any mutation. If Apply() produces bad output (empty
+	// applied string or zero-length body), we restore and the request
+	// continues with the original body. The panic recovery in the dispatcher
+	// also relies on this: ap.RawBody is only overwritten after all checks
+	// pass, so a mid-Apply panic leaves origBody as the safe fallback.
+	origBody := ap.RawBody
+
 	plan := h.planner.Plan(ap.RawBody, reqCtx.IsSubagent)
 	observability.RecordStaticPlan(string(plan.Mode), plan.Reason, !plan.Eligible)
 	if !plan.Eligible {
 		return nil
 	}
+
 	newBody, applied := h.planner.Apply(ap.RawBody, plan)
-	if applied != "" {
-		ap.RawBody = newBody
-		ap.ContentHash = plan.ContentHash
-		ap.TransformApplied = applied
+
+	// Guard against silent failure: empty applied string OR zero-length body
+	// means the transform either found nothing to do or failed internally.
+	// Restore original and treat as noop — never forward a corrupted body.
+	if applied == "" || len(newBody) == 0 {
+		ap.RawBody = origBody
+		observability.RecordStaticPlan(string(plan.Mode), "apply_noop_or_fail", true)
+		return nil
 	}
+
+	ap.RawBody = newBody
+	ap.ContentHash = plan.ContentHash
+	ap.TransformApplied = applied
 	return nil
 }

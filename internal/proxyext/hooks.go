@@ -77,8 +77,15 @@ func OnPostResponse(ctx context.Context, fc *ForwardContext, result ForwardResul
 }
 
 // TransformStaticPayload delegates to the active hooks implementation.
-// On error the ap is left unchanged (fail-open contract).
+// Panics are recovered and logged — a panicking planner must never crash
+// the request goroutine. On any error or panic, ap is left unchanged
+// (fail-open contract).
 func TransformStaticPayload(ctx context.Context, reqCtx RequestContext, ap *AssembledPrompt) error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[proxyext] TransformStaticPayload panic recovered: %v — body unchanged", r)
+		}
+	}()
 	err := activeHooks.TransformStaticPayload(ctx, reqCtx, ap)
 	if err != nil {
 		log.Printf("[proxyext] TransformStaticPayload error (fail-open): %v", err)

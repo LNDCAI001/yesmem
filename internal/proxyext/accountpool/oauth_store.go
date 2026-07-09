@@ -22,6 +22,10 @@ type claudeCredentials struct {
 }
 
 // GetAccessToken implements TokenProvider.
+// Returns an error if the credential file is missing, unparseable, contains no
+// usable token, or if the token is already expired at the time of reading.
+// An expired-token error allows the retry classifier to rotate to the next
+// account immediately without burning an API round-trip to receive a 401.
 func (s *LocalOAuthStore) GetAccessToken(_ context.Context, account AccountRef) (TokenResult, error) {
 	dir := account.CredentialDir
 	if dir == "" {
@@ -63,5 +67,16 @@ func (s *LocalOAuthStore) GetAccessToken(_ context.Context, account AccountRef) 
 			result.ExpiresAt = t
 		}
 	}
+
+	// Reject already-expired tokens before hitting the API.
+	// This lets the pool's FailureTokenInvalid classifier rotate to the next
+	// account without a wasted round-trip. A small grace period (30 s) avoids
+	// false positives from clock skew between the host and Anthropic's servers.
+	const expiryGrace = 30 * time.Second
+	if !result.ExpiresAt.IsZero() && time.Now().After(result.ExpiresAt.Add(-expiryGrace)) {
+		return TokenResult{}, fmt.Errorf("accountpool: token expired (or expiring within %s) for account %q (expired %s)",
+			expiryGrace, account.Name, result.ExpiresAt.Format(time.RFC3339))
+	}
+
 	return result, nil
 }

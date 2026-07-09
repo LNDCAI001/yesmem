@@ -84,6 +84,10 @@ func NewSMMHooks(cfg SMMConfig) Hooks {
 	return &smmHooks{pool: pool, planner: planner, cfg: cfg}
 }
 
+// BeforeForward selects an account from the pool and injects its Bearer token
+// into the outbound Authorization header. The selected AccountRef is stored in
+// fc.SelectedAccount — never in a request header — so it is never forwarded to
+// the upstream API.
 func (h *smmHooks) BeforeForward(ctx context.Context, fc *ForwardContext) error {
 	if h.pool == nil || (fc.ReqCtx.IsSubagent && !h.cfg.AccountPool.ApplyToSubagents) {
 		return nil
@@ -96,27 +100,29 @@ func (h *smmHooks) BeforeForward(ctx context.Context, fc *ForwardContext) error 
 	}
 	acc, err := h.pool.InjectAuthForAttempt(ctx, fc.OutboundReq, meta, fc.Attempt)
 	if err != nil {
-		log.Printf("[proxyext] BeforeForward: account injection failed: %v", err)
+		log.Printf("[proxyext] BeforeForward: account injection failed (attempt=%d): %v", fc.Attempt, err)
 		observability.RecordAuthFailure("<unknown>")
 		return err
 	}
-	fc.OutboundReq.Header.Set("X-SMM-Account", acc.Name) // internal tracing header
+	// Store selected account in context — never on the outbound request.
+	fc.SelectedAccount = acc
 	observability.RecordAccountSelected(acc.Name, fc.Attempt)
 	return nil
 }
 
+// OnPreStreamResponse is called after upstream response headers are received
+// but before any body bytes are written to the client. It uses the full
+// AccountRef stored in fc.SelectedAccount (not a header reconstruction) to
+// correctly update state and decide whether to retry.
 func (h *smmHooks) OnPreStreamResponse(ctx context.Context, fc *ForwardContext, resp *http.Response) (RetryDecision, error) {
 	if h.pool == nil {
 		return RetryDecision{Retry: false}, nil
 	}
-	accName := fc.OutboundReq.Header.Get("X-SMM-Account")
-	acc := accountpool.AccountRef{Name: accName}
-
-	// streamStarted is always false here — this hook is called before any
-	// bytes are written to the client, so replay is safe.
-	shouldRetry := h.pool.ShouldRetry(acc, resp, false, fc.Attempt)
+	// fc.SelectedAccount is the full AccountRef set by BeforeForward.
+	// streamStarted is always false here — this hook is called before flush.
+	shouldRetry := h.pool.ShouldRetry(fc.SelectedAccount, resp, false, fc.Attempt)
 	if shouldRetry {
-		observability.RecordQuotaHit(accName)
+		observability.RecordQuotaHit(fc.SelectedAccount.Name)
 		return RetryDecision{
 			Retry:       true,
 			RetryReason: "pre_stream_quota",
@@ -126,17 +132,21 @@ func (h *smmHooks) OnPreStreamResponse(ctx context.Context, fc *ForwardContext, 
 	return RetryDecision{Retry: false}, nil
 }
 
+// OnPostResponse records the final outcome for the selected account.
+// Called after the stream ends or the non-streaming body is consumed.
 func (h *smmHooks) OnPostResponse(_ context.Context, fc *ForwardContext, result ForwardResult) {
 	if h.pool == nil {
 		return
 	}
-	accName := fc.OutboundReq.Header.Get("X-SMM-Account")
+	// If the stream was already in progress when it failed, the account
+	// delivered bytes successfully — treat as success from the pool's view.
 	if result.StreamStarted && result.ClassifiedFailure != "" {
-		observability.RecordRetryBlockedAfterStream(accName, result.StatusCode)
+		observability.RecordRetryBlockedAfterStream(fc.SelectedAccount.Name, result.StatusCode)
+		h.pool.RecordSuccess(fc.SelectedAccount)
 		return
 	}
 	if result.ClassifiedFailure == "" {
-		h.pool.RecordSuccess(accountpool.AccountRef{Name: accName})
+		h.pool.RecordSuccess(fc.SelectedAccount)
 	}
 }
 

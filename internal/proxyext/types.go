@@ -6,6 +6,8 @@ package proxyext
 import (
 	"context"
 	"net/http"
+
+	"github.com/carsteneu/yesmem/internal/proxyext/accountpool"
 )
 
 // RequestContext carries per-request metadata threaded through hooks.
@@ -25,6 +27,10 @@ type ForwardContext struct {
 	OutboundReq  *http.Request
 	// Attempt is 0 for the first try, 1 for the first retry, etc.
 	Attempt int
+	// SelectedAccount is set by BeforeForward and read by OnPreStreamResponse
+	// and OnPostResponse. Carrying it here avoids leaking account identity into
+	// any header that would reach the upstream API.
+	SelectedAccount accountpool.AccountRef
 }
 
 // RetryDecision is returned by OnPreStreamResponse.
@@ -38,6 +44,10 @@ type RetryDecision struct {
 type ForwardResult struct {
 	StatusCode        int
 	StreamStarted     bool
+	// BytesFlushed is true when at least one byte has been written to the
+	// downstream client. The retry loop in proxy_forward_smm.go treats this
+	// as a hard stop: once BytesFlushed is true, no retry is possible
+	// regardless of the upstream status code.
 	BytesFlushed      bool
 	ClassifiedFailure string
 }

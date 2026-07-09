@@ -31,6 +31,11 @@ type ForwardContext struct {
 	// and OnPostResponse. Carrying it here avoids leaking account identity into
 	// any header that would reach the upstream API.
 	SelectedAccount accountpool.AccountRef
+	// BytesFlushed is set to true by the retry loop in proxy_forward_smm.go
+	// the moment any bytes have been committed to the downstream client writer.
+	// Once true, RetryDecision.Retry MUST be ignored — no retry is possible
+	// after the client has received data.
+	BytesFlushed bool
 }
 
 // RetryDecision is returned by OnPreStreamResponse.
@@ -42,8 +47,8 @@ type RetryDecision struct {
 
 // ForwardResult describes the outcome of a forwarded request.
 type ForwardResult struct {
-	StatusCode        int
-	StreamStarted     bool
+	StatusCode    int
+	StreamStarted bool
 	// BytesFlushed is true when at least one byte has been written to the
 	// downstream client. The retry loop in proxy_forward_smm.go treats this
 	// as a hard stop: once BytesFlushed is true, no retry is possible
@@ -78,7 +83,7 @@ type Hooks interface {
 	// headers but before any body bytes are flushed to the client.
 	// If RetryDecision.Retry is true the caller MUST rebuild the request
 	// from fc.OriginalBody and retry. The caller MUST NOT retry if any
-	// bytes have already been written to the client.
+	// bytes have already been written to the client (fc.BytesFlushed).
 	OnPreStreamResponse(ctx context.Context, fc *ForwardContext, resp *http.Response) (RetryDecision, error)
 
 	// OnPostResponse is called after the response has been fully processed

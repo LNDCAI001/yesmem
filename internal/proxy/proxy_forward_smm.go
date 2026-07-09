@@ -2,10 +2,10 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/carsteneu/yesmem/internal/proxyext"
 )
@@ -152,24 +152,16 @@ func (s *Server) smmForwardWithRetry(
 	}
 
 	// We have a usable response with BytesFlushed == false.
-	// Hand it to the annotation forwarder. Because forwardWithAnnotation
-	// re-does the http.Client.Do call internally, we snapshot the result
-	// state and call OnPostResponse here, then delegate the actual stream
-	// flush via the standard path.
+	// Close this probe response — forwardWithAnnotation will make its own
+	// request with the winning account's auth already set on origReq.
 	//
-	// NOTE: forwardWithAnnotation will re-build and re-send the request.
-	// This means we incur one extra RTT for the final successful attempt.
-	// The alternative (patching forwardWithAnnotation to accept a pre-built
-	// *http.Response) is left as a future optimisation; correctness takes
-	// priority over the extra RTT on the success path.
-	//
-	// Close the resp we have — forwardWithAnnotation will get its own.
+	// This means one extra RTT on the final successful attempt. Correctness
+	// over optimisation in v1; patching forwardWithAnnotation to accept a
+	// pre-built *http.Response is left as a v2 optimisation.
 	resp.Body.Close()
 
-	// Restore original auth header from the winning account's token so
+	// Copy the winning account's Authorization header onto origReq so that
 	// forwardWithAnnotation sends with the correct credentials.
-	// fc.OutboundReq.Header already has it set by BeforeForward.
-	// Copy the Authorization header back onto origReq for the delegation.
 	if auth := fc.OutboundReq.Header.Get("Authorization"); auth != "" {
 		origReq.Header.Set("Authorization", auth)
 	}
@@ -183,28 +175,14 @@ func (s *Server) smmForwardWithRetry(
 	s.forwardWithAnnotation(w, origReq, body, reqIdx, toolUseIDs, proj, threadID, msgCount, estimatedTokens...)
 }
 
-// extractModelStringFromBody is a lightweight model-name extractor used by
-// the SMM layer before the full request parse. Duplicates a small part of
-// extractModelFromBody to avoid package-level import cycles.
+// extractModelStringFromBody extracts the model field from a JSON request body.
+// Used by the SMM layer before the full request parse.
 func extractModelStringFromBody(body []byte) string {
-	type modelOnly struct {
+	var m struct {
 		Model string `json:"model"`
 	}
-	var m modelOnly
-	if err := unmarshalFast(body, &m); err != nil || m.Model == "" {
+	if err := json.Unmarshal(body, &m); err != nil {
 		return ""
 	}
 	return m.Model
-}
-
-// unmarshalFast is a thin wrapper retained so the SMM file does not directly
-// import encoding/json in a way that shadows the package-level import pattern.
-func unmarshalFast(data []byte, v any) error {
-	import_ := func() error {
-		// Forward-compat shim: call json.Unmarshal via a local alias so that
-		// future swaps to a faster decoder (e.g. sonic) happen in one place.
-		import "encoding/json"
-		return json.Unmarshal(data, v)
-	}
-	return import_()
 }

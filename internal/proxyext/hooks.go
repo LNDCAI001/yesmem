@@ -6,10 +6,14 @@ import (
 	"net/http"
 )
 
-// ActiveHooks is the process-level Hooks implementation.
+// activeHooks is the process-level Hooks implementation.
 // It is set once at startup via Init and then read-only.
 // Guards against nil: if Init is never called, all calls fall through to noop.
 var activeHooks Hooks = &noopHooks{}
+
+// activeCfg caches the SMMConfig so MaxPreStreamRetries can read it without
+// a type assertion on the live hook.
+var activeCfg SMMConfig
 
 // Init sets the active hook implementation. Call this once during server
 // startup, before the first request is handled.
@@ -21,12 +25,31 @@ func Init(h Hooks) {
 	activeHooks = h
 }
 
+// InitWithConfig sets the active hook implementation and caches the config.
+// Prefer this over Init when an SMMConfig is available at startup.
+func InitWithConfig(h Hooks, cfg SMMConfig) {
+	activeCfg = cfg
+	Init(h)
+}
+
 // HooksActive reports whether a real (non-noop) Hooks implementation is
-// installed. When false, smmForwardWithRetry short-circuits immediately and
-// the stock forwardWithAnnotation path is taken with zero extra allocations.
+// installed. When false, smmForwardWithAnnotation short-circuits immediately
+// and the stock forwardWithAnnotation path is taken with zero extra allocations.
 func HooksActive() bool {
 	_, isNoop := activeHooks.(*noopHooks)
 	return !isNoop
+}
+
+// MaxPreStreamRetries returns the configured maximum number of pre-stream
+// retries. Returns 2 (safe default) when SMM is disabled or unconfigured.
+func MaxPreStreamRetries() int {
+	if !HooksActive() {
+		return 0 // noop: no retries, first attempt only
+	}
+	if activeCfg.AccountPool.MaxPreStreamRetries > 0 {
+		return activeCfg.AccountPool.MaxPreStreamRetries
+	}
+	return 2 // spec default
 }
 
 // BeforeForward delegates to the active hooks implementation.

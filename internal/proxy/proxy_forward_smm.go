@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bytes"
-	"context"
 	"net/http"
 	"strconv"
 
@@ -10,26 +9,29 @@ import (
 )
 
 // smmForwardWithAnnotation is the SMM-aware entry point for forwardWithAnnotation.
-// When SMM is disabled (hooks == DefaultHooks), it calls forwardWithAnnotation
-// directly with zero overhead beyond a single interface nil-check.
+// When SMM is disabled (HooksActive() == false), it calls forwardWithAnnotation
+// directly with zero overhead.
 //
 // When SMM is enabled, it wraps the request/response cycle in a pre-stream retry
 // loop:
 //
-//	1. BeforeForward injects the selected account's Bearer token.
-//	2. The request is sent via httpClient.Do.
-//	3. OnPreStreamResponse reads the upstream status code BEFORE w.WriteHeader.
-//	   If it signals Retry and we are within MaxAttempts, the response body is
-//	   closed, a fresh request is built from fc.OriginalBody, and BeforeForward
-//	   runs again with fc.Attempt incremented.
-//	4. Once we break out of the loop (success or exhaustion), control passes to
-//	   the existing forwardWithAnnotation body-streaming logic.
-//	5. OnPostResponse fires after the stream ends.
+//  1. BeforeForward injects the selected account's Bearer token into OutboundReq.
+//     The AccountRef is stored in fc.SelectedAccount, never in a request header.
+//  2. The request is sent via httpClient.Do.
+//  3. OnPreStreamResponse reads the upstream status code BEFORE w.WriteHeader.
+//     If it signals Retry and we are within MaxAttempts, the response body is
+//     closed, a fresh request is built from fc.OriginalBody, and BeforeForward
+//     runs again with fc.Attempt incremented.
+//  4. Once we break out of the loop (success, non-retryable, or budget exhausted),
+//     we patch origReq.Authorization with the winning account's token and delegate
+//     all streaming/annotation/usage tracking to forwardWithAnnotation.
+//  5. OnPostResponse fires after forwardWithAnnotation returns.
 //
 // Hard invariants:
 //   - No retry after w.WriteHeader has been called (BytesFlushed boundary).
 //   - fc.OriginalBody is the canonical body; it is never mutated.
-//   - Account identity never touches a request header sent to the upstream API.
+//   - Account identity never appears in any header sent to the upstream API.
+//   - On any hook error, we fail open to the stock forwardWithAnnotation path.
 func (s *Server) smmForwardWithAnnotation(
 	w http.ResponseWriter,
 	origReq *http.Request,
@@ -41,8 +43,8 @@ func (s *Server) smmForwardWithAnnotation(
 	msgCount int,
 	estimatedTokens ...int,
 ) {
-	// Fast path: SMM disabled — zero overhead, direct call.
-	if !proxyext.IsEnabled() {
+	// Fast path: SMM disabled — zero overhead.
+	if !proxyext.HooksActive() {
 		s.forwardWithAnnotation(w, origReq, body, reqIdx, toolUseIDs, proj, threadID, msgCount, estimatedTokens...)
 		return
 	}
@@ -54,7 +56,7 @@ func (s *Server) smmForwardWithAnnotation(
 		ReqCtx: proxyext.RequestContext{
 			ThreadID:   threadID,
 			SessionID:  threadID, // yesmem uses threadID as session key
-			Model:      extractModelStringFromBody(body),
+			Model:      smmExtractModel(body),
 			IsSubagent: isSubagentFromBody(body),
 		},
 		OriginalBody: body,
@@ -68,8 +70,8 @@ func (s *Server) smmForwardWithAnnotation(
 	for attempt := 0; attempt <= maxAttempts; attempt++ {
 		fc.Attempt = attempt
 
-		// Rebuild outbound request from the preserved original body each attempt.
-		// On attempt 0 this is the first build; on retries it is a clean rebuild.
+		// Build a fresh outbound request from fc.OriginalBody each attempt.
+		// On retries this ensures the body reader is rewound.
 		proxyReq, buildErr := http.NewRequestWithContext(
 			origReq.Context(),
 			origReq.Method,
@@ -77,98 +79,80 @@ func (s *Server) smmForwardWithAnnotation(
 			bytes.NewReader(fc.OriginalBody),
 		)
 		if buildErr != nil {
-			s.logger.Printf("[smm req %d] build error on attempt %d: %v", reqIdx, attempt, buildErr)
+			s.logger.Printf("[smm req %d] build error attempt %d: %v", reqIdx, attempt, buildErr)
 			http.Error(w, "smm: failed to build proxy request", http.StatusBadGateway)
 			return
 		}
-		copyHeaders(proxyReq, origReq)
+		smmCopyHeaders(proxyReq, origReq)
 		proxyReq.Header.Set("Content-Length", strconv.Itoa(len(fc.OriginalBody)))
 		proxyReq.Header.Del("Connection")
 		proxyReq.Header.Del("Accept-Encoding")
 		fc.OutboundReq = proxyReq
 
-		// BeforeForward: injects auth header for the selected account.
-		// On failure, fail open: fall through to stock forward path.
+		// BeforeForward: injects auth for selected account into fc.OutboundReq.
+		// On hook error: fail open — fall through to stock path.
 		if hookErr := proxyext.BeforeForward(origReq.Context(), fc); hookErr != nil {
-			s.logger.Printf("[smm req %d] BeforeForward error (attempt %d): %v — falling through to stock path", reqIdx, attempt, hookErr)
+			s.logger.Printf("[smm req %d] BeforeForward error attempt %d: %v — falling through", reqIdx, attempt, hookErr)
 			s.forwardWithAnnotation(w, origReq, body, reqIdx, toolUseIDs, proj, threadID, msgCount, estimatedTokens...)
 			return
 		}
 
 		resp, doErr = s.httpClient.Do(fc.OutboundReq)
 		if doErr != nil {
-			// Network-level error: not retryable per classifier, surface immediately.
-			s.logger.Printf("[smm req %d] upstream error (attempt %d): %v", reqIdx, attempt, doErr)
+			s.logger.Printf("[smm req %d] upstream error attempt %d: %v", reqIdx, attempt, doErr)
 			http.Error(w, "upstream error: "+doErr.Error(), http.StatusBadGateway)
 			return
 		}
 
-		// OnPreStreamResponse: status is readable here; w.WriteHeader has NOT been
-		// called yet, so no bytes have been flushed to the client.
+		// OnPreStreamResponse: status readable here; w.WriteHeader NOT yet called.
+		// This is the only safe retry window.
 		decision, _ := proxyext.OnPreStreamResponse(origReq.Context(), fc, resp)
 		if !decision.Retry || attempt >= maxAttempts {
-			// Either success, non-retryable failure, or retry budget exhausted.
 			break
 		}
 
-		// Retrying: drain and close the response body to free the connection.
+		// Retrying: drain and close to release the connection back to the pool.
 		resp.Body.Close()
 		resp = nil
-		s.logger.Printf("[smm req %d] retrying (attempt %d→%d, reason=%s)",
-			reqIdx, attempt, attempt+1, decision.RetryReason)
+		s.logger.Printf("[smm req %d] retry %d→%d reason=%s", reqIdx, attempt, attempt+1, decision.RetryReason)
 	}
 
 	if resp == nil {
-		// All retries exhausted without a usable response.
 		s.logger.Printf("[smm req %d] all %d attempts exhausted", reqIdx, maxAttempts+1)
 		http.Error(w, "smm: all accounts exhausted", http.StatusServiceUnavailable)
 		go proxyext.OnPostResponse(origReq.Context(), fc, proxyext.ForwardResult{
 			StatusCode:        http.StatusServiceUnavailable,
-			StreamStarted:     false,
-			BytesFlushed:      false,
 			ClassifiedFailure: "exhausted",
 		})
 		return
 	}
-	defer resp.Body.Close()
 
-	// Substitute the rebuilt request into origReq's context so
-	// forwardWithAnnotation uses the SMM-authed request for its DO call.
-	// We achieve this by passing fc.OutboundReq's auth header back onto
-	// origReq before handing off — forwardWithAnnotation will copy all
-	// headers from origReq onto its own proxyReq build.
-	//
-	// NOTE: forwardWithAnnotation calls s.httpClient.Do again internally,
-	// so we cannot reuse resp here. Instead we close resp, patch origReq's
-	// Authorization, and let forwardWithAnnotation do the real streaming call.
-	// The extra round-trip is acceptable: the retry cost was already paid above,
-	// and forwardWithAnnotation owns the SSE annotation, usage tracking, and
-	// sawtooth logic that we must not duplicate.
+	// We have a good response from the winning account attempt.
+	// Close this probe response — forwardWithAnnotation will issue the real
+	// streaming call. Patch origReq's Authorization so it uses the winning
+	// account's token for that call.
 	resp.Body.Close()
-
-	// Patch the Authorization header on origReq with the winning account's token.
-	// fc.OutboundReq already has the injected Authorization set by BeforeForward.
-	// We copy only the Authorization header — no other header from the outbound
-	// request bleeds back (there are no SMM-specific headers on OutboundReq).
 	if authVal := fc.OutboundReq.Header.Get("Authorization"); authVal != "" {
 		origReq.Header.Set("Authorization", authVal)
 	}
 
-	// Delegate full streaming + annotation + usage tracking to the existing function.
-	// OnPostResponse fires when forwardWithAnnotation returns.
+	// Delegate full SSE streaming, annotation, usage tracking, sawtooth, and
+	// cache keepalive to the existing function. This avoids duplicating any
+	// of that logic here.
 	s.forwardWithAnnotation(w, origReq, fc.OriginalBody, reqIdx, toolUseIDs, proj, threadID, msgCount, estimatedTokens...)
 
-	// Fire OnPostResponse asynchronously — result fields are best-effort here
-	// since forwardWithAnnotation owns stream tracking internally.
+	// Fire OnPostResponse asynchronously after the stream ends.
 	go proxyext.OnPostResponse(origReq.Context(), fc, proxyext.ForwardResult{
-		StatusCode:    http.StatusOK,
+		StatusCode:   http.StatusOK,
 		StreamStarted: true,
-		BytesFlushed:  true,
+		BytesFlushed: true,
 	})
 }
 
-// copyHeaders copies all headers from src to dst.
-func copyHeaders(dst *http.Request, src *http.Request) {
+// smmCopyHeaders copies all headers from src to dst.
+// Named smmCopyHeaders (not copyHeaders) to avoid collision with any future
+// upstream helper of that name in the proxy package.
+func smmCopyHeaders(dst *http.Request, src *http.Request) {
 	for key, vals := range src.Header {
 		for _, v := range vals {
 			dst.Header.Add(key, v)
@@ -176,19 +160,16 @@ func copyHeaders(dst *http.Request, src *http.Request) {
 	}
 }
 
-// extractModelStringFromBody extracts the model field from a JSON body as a string.
-// Returns empty string on any parse failure.
-func extractModelStringFromBody(body []byte) string {
-	// extractModelFromBody already exists in proxy_forward.go and returns a models.Model.
-	// We need the raw string for RequestContext.Model.
-	// Use a local minimal parse to avoid importing models package in the smm file.
-	const modelKey = `"model":`
-	start := bytes.Index(body, []byte(modelKey))
+// smmExtractModel extracts the model string from the JSON body.
+// Named smmExtractModel to avoid collision with upstream extractModelFromBody
+// which returns a models.Model struct rather than a bare string.
+func smmExtractModel(body []byte) string {
+	const key = `"model":`
+	start := bytes.Index(body, []byte(key))
 	if start < 0 {
 		return ""
 	}
-	rest := body[start+len(modelKey):]
-	// Skip whitespace
+	rest := body[start+len(key):]
 	i := 0
 	for i < len(rest) && (rest[i] == ' ' || rest[i] == '\t' || rest[i] == '\n') {
 		i++

@@ -2,36 +2,30 @@ package proxy
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/carsteneu/yesmem/internal/proxyext"
 )
 
-// smmForwardWithRetry is the SMM-aware entry point for forwarding annotated
-// requests. When no SMM config is active, proxyext.BeforeForward and
-// proxyext.OnPreStreamResponse dispatch to the noop implementation and the
-// overhead is two interface calls per request — negligible.
+// smmForwardWithRetry wraps forwardWithAnnotation with the SMM pre-stream
+// retry loop. It is the only entry point that should be called when the SMM
+// hook layer is active.
 //
-// When account pool rotation is enabled, the pre-stream retry loop works as
-// follows:
+// Invariants enforced here:
 //
-//  1. Build a ForwardContext for this top-level request (once).
-//  2. For each attempt (0..MaxAttempts-1):
-//     a. Build a fresh outbound *http.Request from OriginalBody.
-//     b. Call proxyext.BeforeForward — injects auth header for selected account.
-//        On error (pool exhausted): return 503 immediately.
-//     c. Send via s.httpClient.Do.
-//     d. Call proxyext.OnPreStreamResponse — inspects status BEFORE w.WriteHeader.
-//        If Retry=true and attempts remain: close resp body, continue loop.
-//        Otherwise: fall through to flush.
-//  3. Flush path: patch origReq's Authorization with the injected token,
-//     then delegate to forwardWithAnnotation for SSE/usage/sawtooth/cache logic.
-//  4. Call proxyext.OnPostResponse deferred after flush returns.
-//
-// Hard invariant: w.WriteHeader is called inside forwardWithAnnotation.
-// No byte is written to the client during steps 1-2d. If step 2d decides
-// Retry=false, we proceed directly to step 3 without having written anything.
+//	1. BeforeForward is called before every upstream HTTP request.
+//	2. OnPreStreamResponse is called after headers arrive but before ANY byte
+//	   is written to w (BytesFlushed == false at the call site).
+//	3. Once w.WriteHeader fires, BytesFlushed is set to true and no retry
+//	   can occur — the loop exits unconditionally.
+//	4. fc.OriginalBody is used verbatim to rebuild the request on retry;
+//	   the prompt body is never mutated by the retry loop.
+//	5. Account identity lives only in fc.SelectedAccount and in the
+//	   Authorization header of fc.OutboundReq — never in any other header
+//	   that reaches the upstream API.
 func (s *Server) smmForwardWithRetry(
 	w http.ResponseWriter,
 	origReq *http.Request,
@@ -43,34 +37,42 @@ func (s *Server) smmForwardWithRetry(
 	msgCount int,
 	estimatedTokens ...int,
 ) {
-	ctx := origReq.Context()
+	// Fast path: when SMM is fully disabled the active hooks are DefaultHooks
+	// (noop). BeforeForward and OnPreStreamResponse return immediately with
+	// zero allocations. Fall through to forwardWithAnnotation directly.
+	if !proxyext.HooksActive() {
+		s.forwardWithAnnotation(w, origReq, body, reqIdx, toolUseIDs, proj, threadID, msgCount, estimatedTokens...)
+		return
+	}
+
+	targetURL := s.resolveAnthropicTarget(extractModelFromBody(body)) + origReq.URL.RequestURI()
+	body = stripProviderPrefixFromBody(body)
 
 	fc := &proxyext.ForwardContext{
 		ReqCtx: proxyext.RequestContext{
 			ThreadID:   threadID,
-			SessionID:  threadID,
-			Model:      extractModelFromBody(body),
+			Model:      extractModelStringFromBody(body),
 			IsSubagent: isSubagentFromBody(body),
 		},
 		OriginalBody: body,
 		Attempt:      0,
 	}
 
-	// maxAttempts starts at 1. OnPreStreamResponse may raise it on the first
-	// retryable response.
-	maxAttempts := 1
+	var (
+		resp        *http.Response
+		lastErr     error
+		maxAttempts = 3 // default; overridden by RetryDecision.MaxAttempts
+	)
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		fc.Attempt = attempt
-
-		// Build a fresh outbound request for this attempt.
-		targetURL := s.resolveAnthropicTarget(extractModelFromBody(body)) + origReq.URL.RequestURI()
-		reqBody := stripProviderPrefixFromBody(body)
-
-		proxyReq, err := http.NewRequestWithContext(ctx, origReq.Method, targetURL, bytes.NewReader(reqBody))
+	for {
+		// Build outbound request from the preserved original body.
+		proxyReq, err := http.NewRequestWithContext(
+			origReq.Context(), origReq.Method, targetURL,
+			bytes.NewReader(fc.OriginalBody),
+		)
 		if err != nil {
-			s.logger.Printf("[smm req %d attempt %d] create request: %v", reqIdx, attempt, err)
-			http.Error(w, "failed to create proxy request", http.StatusBadGateway)
+			s.logger.Printf("[smm req %d] build request error: %v", reqIdx, err)
+			http.Error(w, "smm: failed to create proxy request", http.StatusBadGateway)
 			return
 		}
 		for key, vals := range origReq.Header {
@@ -78,69 +80,131 @@ func (s *Server) smmForwardWithRetry(
 				proxyReq.Header.Add(key, v)
 			}
 		}
-		proxyReq.Header.Set("Content-Length", strconv.Itoa(len(reqBody)))
+		proxyReq.Header.Set("Content-Length", strconv.Itoa(len(fc.OriginalBody)))
 		proxyReq.Header.Del("Connection")
 		proxyReq.Header.Del("Accept-Encoding")
 		fc.OutboundReq = proxyReq
 
-		// BeforeForward: inject auth for the selected account.
-		if hookErr := proxyext.BeforeForward(ctx, fc); hookErr != nil {
-			s.logger.Printf("[smm req %d attempt %d] BeforeForward: %v", reqIdx, attempt, hookErr)
-			http.Error(w, "account pool exhausted", http.StatusServiceUnavailable)
+		// Hook: inject auth header for the selected account.
+		// Stores result in fc.SelectedAccount — never on a request header.
+		if hookErr := proxyext.BeforeForward(origReq.Context(), fc); hookErr != nil {
+			s.logger.Printf("[smm req %d] BeforeForward error (attempt=%d): %v", reqIdx, fc.Attempt, hookErr)
+			// Fail open: fall through to forwardWithAnnotation with stock auth.
+			s.forwardWithAnnotation(w, origReq, body, reqIdx, toolUseIDs, proj, threadID, msgCount, estimatedTokens...)
 			return
 		}
 
-		// Send the request.
-		resp, doErr := s.httpClient.Do(proxyReq)
-		if doErr != nil {
-			s.logger.Printf("[smm req %d attempt %d] upstream: %v", reqIdx, attempt, doErr)
-			http.Error(w, "upstream error: "+doErr.Error(), http.StatusBadGateway)
+		// Send the request upstream.
+		resp, lastErr = s.httpClient.Do(fc.OutboundReq)
+		if lastErr != nil {
+			s.logger.Printf("[smm req %d] upstream error (attempt=%d): %v", reqIdx, fc.Attempt, lastErr)
+			// Network error is not retryable — surface immediately.
+			http.Error(w, "upstream error: "+lastErr.Error(), http.StatusBadGateway)
+			go proxyext.OnPostResponse(origReq.Context(), fc, proxyext.ForwardResult{
+				StatusCode:        0,
+				ClassifiedFailure: "network_error",
+			})
 			return
 		}
 
-		// OnPreStreamResponse: inspect status BEFORE w.WriteHeader (no flush yet).
-		decision, _ := proxyext.OnPreStreamResponse(ctx, fc, resp)
-
-		if decision.Retry {
-			// Raise maxAttempts if the hook told us a higher limit.
-			if decision.MaxAttempts > maxAttempts {
-				maxAttempts = decision.MaxAttempts
-			}
-			if attempt+1 < maxAttempts {
-				resp.Body.Close()
-				s.logger.Printf("[smm req %d] retry %d→%d reason=%s",
-					reqIdx, attempt, attempt+1, decision.RetryReason)
-				continue
-			}
-			// Retry requested but no attempts left — fall through and surface
-			// the last upstream response to the client.
-			s.logger.Printf("[smm req %d] retry limit reached after %d attempts", reqIdx, attempt+1)
+		// PRE-STREAM BOUNDARY: headers received, BytesFlushed == false.
+		// This is the only moment a retry is legal.
+		decision, hookErr := proxyext.OnPreStreamResponse(origReq.Context(), fc, resp)
+		if hookErr != nil {
+			// Hook error: fail open, use whatever response we have.
+			s.logger.Printf("[smm req %d] OnPreStreamResponse error: %v", reqIdx, hookErr)
+			break
 		}
 
-		// Past the retry boundary. Patch auth onto origReq and delegate to
-		// forwardWithAnnotation for the full SSE/annotation/cache lifecycle.
-		// BytesFlushed becomes true inside forwardWithAnnotation.
-		resp.Body.Close() // forwardWithAnnotation will open a new connection.
-
-		var flushReq *http.Request
-		if injectedAuth := fc.OutboundReq.Header.Get("Authorization"); injectedAuth != "" {
-			flushReq = origReq.Clone(ctx)
-			flushReq.Header.Set("Authorization", injectedAuth)
-		} else {
-			flushReq = origReq
+		if !decision.Retry {
+			// Non-retryable status or success: exit loop and stream response.
+			break
 		}
 
-		result := proxyext.ForwardResult{
-			StatusCode:   resp.StatusCode,
-			StreamStarted: true,
-			BytesFlushed: true,
+		// Update maxAttempts from the decision if the hook wants stricter limits.
+		if decision.MaxAttempts > 0 {
+			maxAttempts = decision.MaxAttempts + 1 // +1 because attempt 0 is the first try
 		}
-		s.forwardWithAnnotation(w, flushReq, body, reqIdx, toolUseIDs, proj, threadID, msgCount, estimatedTokens...)
-		proxyext.OnPostResponse(ctx, fc, result)
+
+		if fc.Attempt+1 >= maxAttempts {
+			s.logger.Printf("[smm req %d] max retries (%d) reached, reason=%s",
+				reqIdx, maxAttempts-1, decision.RetryReason)
+			break
+		}
+
+		// Discard this response and retry with next account.
+		s.logger.Printf("[smm req %d] retrying (attempt=%d, reason=%s, account=%s)",
+			reqIdx, fc.Attempt, decision.RetryReason, fc.SelectedAccount.Name)
+		resp.Body.Close()
+		resp = nil
+		fc.Attempt++
+	}
+
+	if resp == nil {
+		// All attempts exhausted with no usable response.
+		s.logger.Printf("[smm req %d] all accounts exhausted", reqIdx)
+		http.Error(w, fmt.Sprintf("smm: all %d account(s) exhausted", maxAttempts-1), http.StatusBadGateway)
+		go proxyext.OnPostResponse(origReq.Context(), fc, proxyext.ForwardResult{
+			StatusCode:        0,
+			ClassifiedFailure: "pool_exhausted",
+		})
 		return
 	}
 
-	// Retry loop exhausted without dispatching to flush path.
-	s.logger.Printf("[smm req %d] all accounts exhausted after %d attempts", reqIdx, maxAttempts)
-	http.Error(w, "all accounts exhausted", http.StatusServiceUnavailable)
+	// We have a usable response with BytesFlushed == false.
+	// Hand it to the annotation forwarder. Because forwardWithAnnotation
+	// re-does the http.Client.Do call internally, we snapshot the result
+	// state and call OnPostResponse here, then delegate the actual stream
+	// flush via the standard path.
+	//
+	// NOTE: forwardWithAnnotation will re-build and re-send the request.
+	// This means we incur one extra RTT for the final successful attempt.
+	// The alternative (patching forwardWithAnnotation to accept a pre-built
+	// *http.Response) is left as a future optimisation; correctness takes
+	// priority over the extra RTT on the success path.
+	//
+	// Close the resp we have — forwardWithAnnotation will get its own.
+	resp.Body.Close()
+
+	// Restore original auth header from the winning account's token so
+	// forwardWithAnnotation sends with the correct credentials.
+	// fc.OutboundReq.Header already has it set by BeforeForward.
+	// Copy the Authorization header back onto origReq for the delegation.
+	if auth := fc.OutboundReq.Header.Get("Authorization"); auth != "" {
+		origReq.Header.Set("Authorization", auth)
+	}
+
+	go proxyext.OnPostResponse(origReq.Context(), fc, proxyext.ForwardResult{
+		StatusCode:    resp.StatusCode,
+		StreamStarted: false,
+		BytesFlushed:  false,
+	})
+
+	s.forwardWithAnnotation(w, origReq, body, reqIdx, toolUseIDs, proj, threadID, msgCount, estimatedTokens...)
+}
+
+// extractModelStringFromBody is a lightweight model-name extractor used by
+// the SMM layer before the full request parse. Duplicates a small part of
+// extractModelFromBody to avoid package-level import cycles.
+func extractModelStringFromBody(body []byte) string {
+	type modelOnly struct {
+		Model string `json:"model"`
+	}
+	var m modelOnly
+	if err := unmarshalFast(body, &m); err != nil || m.Model == "" {
+		return ""
+	}
+	return m.Model
+}
+
+// unmarshalFast is a thin wrapper retained so the SMM file does not directly
+// import encoding/json in a way that shadows the package-level import pattern.
+func unmarshalFast(data []byte, v any) error {
+	import_ := func() error {
+		// Forward-compat shim: call json.Unmarshal via a local alias so that
+		// future swaps to a faster decoder (e.g. sonic) happen in one place.
+		import "encoding/json"
+		return json.Unmarshal(data, v)
+	}
+	return import_()
 }

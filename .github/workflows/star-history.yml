@@ -13,6 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: carsteneu/mystarhistory@main
+      - uses: carsteneu/mystarhistory@v1
         with:
           repos: ${{ github.repository }}

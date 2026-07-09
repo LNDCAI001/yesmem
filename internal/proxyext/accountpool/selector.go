@@ -53,6 +53,16 @@ func (r *RoundRobinSelector) MarkResult(result AccountResult) {
 		r.store.RecordQuotaHit(result.Account.Name, r.cooldown)
 	case FailureTokenInvalid:
 		r.store.RecordAuthError(result.Account.Name, 3)
+	case FailureEntitlementMismatch:
+		// 403: this account cannot serve this request type. Hard-fail
+		// immediately (maxConsecFails=1) so it is never retried again.
+		// No amount of retrying will fix an entitlement problem.
+		r.store.RecordAuthError(result.Account.Name, 1)
+	case FailureNetworkTransient:
+		// Transient network error: short cooldown to allow recovery without
+		// hammering the upstream. 30s is enough for most network blips.
+		// Do not hard-fail — the account itself is healthy.
+		r.store.RecordQuotaHit(result.Account.Name, 30*time.Second)
 	case FailureStreamMidway:
 		// Stream was already started — record as success from the pool's
 		// perspective (the account delivered bytes; midway failure is upstream).

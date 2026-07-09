@@ -1,223 +1,130 @@
 package proxy
 
-// proxy_forward_smm.go — SMM-aware forward path and pre-stream retry loop.
-//
-// This file is the sole integration point between internal/proxy and
-// internal/proxyext. All other proxy files are unmodified.
-//
-// How to wire into proxy_forward.go (minimal edit):
-//
-//   In the existing forward dispatch, add a single branch ABOVE the normal
-//   forwardWithAnnotation (or equivalent) call:
-//
-//     if proxyext.HooksActive() {
-//         forwardWithSMM(ctx, w, req, buildOutbound, doHTTP, reqCtx)
-//         return
-//     }
-//     // existing path follows unchanged
-//
-//   buildOutbound and doHTTP are closures that capture whatever
-//   proxy_forward.go already uses. They must:
-//     - buildOutbound(body []byte) (*http.Request, error)
-//         Construct a fresh outbound *http.Request from scratch using body.
-//         MUST NOT read from the original req.Body (already drained).
-//     - doHTTP(r *http.Request) (*http.Response, error)
-//         Send r to the upstream and return the response.
-//
-// Retry invariant (HARD):
-//   Once fc.BytesFlushed is true, no retry is possible regardless of the
-//   upstream status code. smmWriter sets this on the first Write() call.
-//   WriteHeader does NOT set BytesFlushed — status headers are not body bytes
-//   and some upstreams send 200 before a retryable quota body.
-//
-// OnPostResponse is called exactly once after the loop exits, regardless
-// of which exit path was taken (success, error, exhaustion).
-
 import (
-	"io"
+	"bytes"
+	"context"
+	"fmt"
 	"log"
 	"net/http"
-	"context"
 
 	"github.com/carsteneu/yesmem/internal/proxyext"
 )
 
-// smmWriter wraps the downstream ResponseWriter. It sets fc.BytesFlushed the
-// moment the first body byte is committed to the client. Once BytesFlushed is
-// true the retry loop treats it as a hard stop.
-type smmWriter struct {
-	http.ResponseWriter
-	fc *proxyext.ForwardContext
+// smmForwardResult is the internal result of a SMM-aware forward attempt.
+type smmForwardResult struct {
+	resp         *http.Response
+	err          error
+	attempts     int
+	bytesFlushed bool
 }
 
-func (w *smmWriter) Write(b []byte) (int, error) {
-	if len(b) > 0 {
-		w.fc.BytesFlushed = true
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-// WriteHeader does NOT set BytesFlushed. Headers are transport metadata;
-// only body bytes reaching the client make a retry impossible.
-func (w *smmWriter) WriteHeader(code int) {
-	w.ResponseWriter.WriteHeader(code)
-}
-
-// forwardWithSMM is the SMM-aware forward path. It is called by
-// proxy_forward.go when proxyext.HooksActive() returns true. When SMM is
-// disabled (default), proxy_forward.go takes its normal path and this
-// function is never entered — zero runtime cost on the hot path.
+// ForwardWithSMM executes the outbound HTTP request with SMM hook support.
 //
-// Parameters:
-//   ctx          — request context (cancellation, deadline)
-//   w            — downstream ResponseWriter (wrapped in smmWriter internally)
-//   origReq      — the inbound *http.Request; Body is drained once here
-//   buildOutbound — constructs a fresh outbound *http.Request from body bytes
-//   do           — sends the outbound request, returns upstream *http.Response
-//   reqCtx       — proxyext.RequestContext populated by caller from origReq
-func forwardWithSMM(
+// It is a wrapper around s.httpClient.Do that:
+//   - calls proxyext.BeforeForward before each attempt to inject auth
+//   - calls proxyext.OnPreStreamResponse after headers arrive but before
+//     any bytes are written to the downstream client
+//   - retries on RetryDecision.Retry == true, up to MaxAttempts
+//   - stops unconditionally once BytesFlushed is true
+//
+// On return:
+//   - resp is the final upstream response (caller must close resp.Body)
+//   - err is non-nil only for network/dial failures on all attempts
+//   - fc.BytesFlushed is false (stream not started; caller writes to w)
+//
+// If SMM is disabled (proxyext.ActiveHooks() returns noop), this is a
+// thin wrapper with one extra function call overhead — no allocation.
+func (s *Server) ForwardWithSMM(
 	ctx context.Context,
 	w http.ResponseWriter,
 	origReq *http.Request,
-	buildOutbound func(body []byte) (*http.Request, error),
-	do func(*http.Request) (*http.Response, error),
-	reqCtx proxyext.RequestContext,
-) {
-	// --- Snapshot body once. Every retry reads from this slice. ---
-	// origReq.Body is drained exactly once here. buildOutbound must use
-	// the body parameter, never origReq.Body, on every subsequent call.
-	var originalBody []byte
-	if origReq.Body != nil && origReq.Body != http.NoBody {
-		var err error
-		originalBody, err = io.ReadAll(origReq.Body)
-		if err != nil {
-			log.Printf("[smm] failed to read request body: %v", err)
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		_ = origReq.Body.Close()
-	}
-
-	sw := &smmWriter{ResponseWriter: w}
-
+	body []byte,
+	targetURL string,
+) (*http.Response, *proxyext.ForwardContext, error) {
 	fc := &proxyext.ForwardContext{
-		ReqCtx:       reqCtx,
-		OriginalBody: originalBody,
-		Attempt:      0,
-		BytesFlushed: false,
+		ReqCtx: proxyext.RequestContext{
+			ThreadID:   origReq.Header.Get("X-Thread-Id"),
+			SessionID:  origReq.Header.Get("X-Session-Id"),
+			Model:      extractModelFromBody(body),
+			IsSubagent: isSubagentRequest(origReq),
+		},
+		OriginalBody: body,
 	}
 
-	// maxAttempts = 1 first attempt + N retries.
-	// e.g. MaxPreStreamRetries()=2 → 3 total attempts (0,1,2).
-	maxAttempts := proxyext.MaxPreStreamRetries() + 1
-	var finalResult proxyext.ForwardResult
+	// maxAttempts is filled from the first RetryDecision that carries it.
+	// Default 1 means: one try, no retries (noop path).
+	maxAttempts := 1
+
+	var lastResp *http.Response
+	var lastErr error
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		fc.Attempt = attempt
+		fc.BytesFlushed = false // reset per attempt; caller sets true on first write
 
-		// --- Phase 1: build outbound request for this attempt ---
-		outbound, err := buildOutbound(originalBody)
+		// Build a fresh request for this attempt.
+		proxyReq, err := http.NewRequestWithContext(ctx, origReq.Method, targetURL, bytes.NewReader(body))
 		if err != nil {
-			log.Printf("[smm] attempt %d: buildOutbound failed: %v", attempt, err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			proxyext.OnPostResponse(ctx, fc, proxyext.ForwardResult{
-				StatusCode:        http.StatusInternalServerError,
-				ClassifiedFailure: "build_outbound_failed",
-			})
-			return
+			return nil, fc, fmt.Errorf("smm: create request (attempt %d): %w", attempt, err)
 		}
-		fc.OutboundReq = outbound
+		for key, vals := range origReq.Header {
+			for _, v := range vals {
+				proxyReq.Header.Add(key, v)
+			}
+		}
+		proxyReq.Header.Del("Connection")
+		proxyReq.Header.Del("Accept-Encoding")
+		fc.OutboundReq = proxyReq
 
-		// --- Phase 2: BeforeForward — auth injection ---
-		if err := proxyext.BeforeForward(ctx, fc); err != nil {
-			log.Printf("[smm] attempt %d: BeforeForward failed: %v — aborting", attempt, err)
-			http.Error(w, "no available account", http.StatusServiceUnavailable)
-			proxyext.OnPostResponse(ctx, fc, proxyext.ForwardResult{
-				StatusCode:        http.StatusServiceUnavailable,
-				ClassifiedFailure: "auth_exhausted",
-			})
-			return
+		// BeforeForward: inject auth for the selected account.
+		// Fail open: on error, proceed with whatever auth is on origReq.
+		if hookErr := proxyext.BeforeForward(ctx, fc); hookErr != nil {
+			log.Printf("[smm] BeforeForward error (attempt=%d), proceeding with original auth: %v", attempt, hookErr)
 		}
 
-		// --- Phase 3: send to upstream ---
-		resp, err := do(outbound)
-		if err != nil {
-			log.Printf("[smm] attempt %d: upstream error: %v", attempt, err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			proxyext.OnPostResponse(ctx, fc, proxyext.ForwardResult{
-				StatusCode:        http.StatusBadGateway,
-				ClassifiedFailure: "network_error",
-			})
-			return
+		resp, doErr := s.httpClient.Do(proxyReq)
+		if doErr != nil {
+			lastErr = doErr
+			// Network error: do not retry — classifier maps this to
+			// FailureNetworkTransient which is non-retryable in v1.
+			break
 		}
 
-		// --- Phase 4: OnPreStreamResponse — before ANY bytes to client ---
-		// fc.BytesFlushed must be false here; smmWriter has not been used yet.
+		// OnPreStreamResponse: check status before any byte hits w.
+		// BytesFlushed is always false here — this is the pre-stream boundary.
 		decision, hookErr := proxyext.OnPreStreamResponse(ctx, fc, resp)
 		if hookErr != nil {
-			log.Printf("[smm] attempt %d: OnPreStreamResponse error: %v", attempt, hookErr)
+			log.Printf("[smm] OnPreStreamResponse error (attempt=%d): %v", attempt, hookErr)
 		}
 
-		// HARD INVARIANT: only retry if:
-		//   (a) the hook says to retry
-		//   (b) no bytes have been flushed (fc.BytesFlushed is the gate)
-		//   (c) we have attempts remaining
-		if decision.Retry && !fc.BytesFlushed && attempt < maxAttempts-1 {
-			log.Printf("[smm] attempt %d: retrying (reason=%s account=%s)",
-				attempt, decision.RetryReason, fc.SelectedAccount.Name)
-			// Drain and discard the upstream response body to allow
-			// connection reuse. Do NOT write anything to the client.
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			continue
+		// Capture MaxAttempts from the first decision that carries a non-zero value.
+		if decision.MaxAttempts > 0 && maxAttempts == 1 {
+			maxAttempts = decision.MaxAttempts + 1 // +1: attempts are 0-indexed
 		}
 
-		// --- Phase 5: stream response to client ---
-		// From this point, any Write() to sw sets fc.BytesFlushed = true.
-		// There is no retry path after this line produces output.
-		sw.fc = fc
-		copyResponseHeaders(sw.ResponseWriter, resp)
-		sw.WriteHeader(resp.StatusCode)
+		if !decision.Retry || fc.BytesFlushed {
+			lastResp = resp
+			lastErr = nil
+			break
+		}
 
-		_, copyErr := io.Copy(sw, resp.Body)
+		// Retry: drain and close this response body before the next attempt.
+		// Do not forward headers or body to w yet.
+		log.Printf("[smm] retrying (attempt=%d, reason=%s)", attempt, decision.RetryReason)
 		_ = resp.Body.Close()
-
-		streamStarted := fc.BytesFlushed
-		finalResult = proxyext.ForwardResult{
-			StatusCode:    resp.StatusCode,
-			StreamStarted: streamStarted,
-			BytesFlushed:  streamStarted,
-		}
-		if copyErr != nil {
-			finalResult.ClassifiedFailure = "stream_copy_error"
-		}
-		break
+		lastResp = nil
 	}
 
-	// --- Phase 6: OnPostResponse — exactly once, after loop ---
-	proxyext.OnPostResponse(ctx, fc, finalResult)
+	if lastResp == nil && lastErr == nil {
+		// All retries exhausted with no usable response.
+		return nil, fc, fmt.Errorf("smm: all %d attempt(s) exhausted", maxAttempts)
+	}
+	return lastResp, fc, lastErr
 }
 
-// copyResponseHeaders copies upstream response headers to the downstream
-// writer. Hop-by-hop headers are explicitly excluded — they are
-// transport-layer concerns that must not be forwarded to the client.
-func copyResponseHeaders(w http.ResponseWriter, resp *http.Response) {
-	hopByHop := map[string]bool{
-		"Connection":          true,
-		"Transfer-Encoding":   true,
-		"Trailer":             true,
-		"Keep-Alive":          true,
-		"Proxy-Authenticate":  true,
-		"Proxy-Authorization": true,
-		"Te":                  true,
-		"Upgrade":             true,
-	}
-	for k, vv := range resp.Header {
-		if hopByHop[k] {
-			continue
-		}
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
+// isSubagentRequest returns true when the request carries a subagent marker.
+// Mirrors the detection logic in internal/proxy/subagent.go.
+func isSubagentRequest(r *http.Request) bool {
+	return r.Header.Get("X-Subagent") == "true" ||
+		r.Header.Get("X-Agent-Source") != ""
 }

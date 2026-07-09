@@ -1,214 +1,196 @@
+// Package proxyext implements the SMM extension hooks for the yesmem proxy.
+// It is intentionally isolated from internal/proxy to minimise upstream merge
+// surface. The only files that import this package are:
+//
+//	internal/proxy/proxy_forward.go  — calls BeforeForward / OnPreStreamResponse
+//	internal/proxy/proxy.go          — calls Init at startup
+//
 package proxyext
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 
-	"github.com/carsteneu/yesmem/internal/proxyext/accountpool"
-	"github.com/carsteneu/yesmem/internal/proxyext/observability"
-	"github.com/carsteneu/yesmem/internal/proxyext/staticplan"
+	"github.com/LNDCAI001/yesmem/internal/proxyext/accountpool"
 )
 
-// SMMConfig is the top-level configuration for the SMM extension layer.
-// It maps directly to the `smm:` block in yesmem's config.yaml.
+// SMMConfig is the top-level YAML block `smm:` loaded by the yesmem config
+// system. All fields default to the zero value (features disabled).
 type SMMConfig struct {
-	Enabled     bool                `yaml:"enabled"`
-	AccountPool AccountPoolConfig   `yaml:"account_pool"`
-	StaticPlan  staticplan.Config   `yaml:"static_plan"`
+	Enabled     bool            `yaml:"enabled"`
+	AccountPool AccountPoolCfg  `yaml:"account_pool"`
+	StaticPlan  StaticPlanCfg   `yaml:"static_plan"`
 }
 
-// AccountPoolConfig is the yaml-facing account pool config.
-type AccountPoolConfig struct {
-	Enabled             bool                    `yaml:"enabled"`
-	MaxPreStreamRetries int                     `yaml:"max_prestream_retries"`
-	CooldownSeconds     int                     `yaml:"cooldown_seconds_after_429"`
-	ApplyToSubagents    bool                    `yaml:"apply_to_subagents"`
-	Accounts            []AccountPoolAccountCfg `yaml:"accounts"`
+// AccountPoolCfg mirrors the `smm.account_pool` YAML block.
+type AccountPoolCfg struct {
+	Enabled                 bool                     `yaml:"enabled"`
+	MaxPreStreamRetries     int                      `yaml:"max_prestream_retries"`
+	CooldownSecondsAfter429 int                      `yaml:"cooldown_seconds_after_429"`
+	ApplyToSubagents        bool                     `yaml:"apply_to_subagents"`
+	Accounts                []AccountPoolAccountCfg  `yaml:"accounts"`
 }
 
-// AccountPoolAccountCfg is the per-account yaml block.
+// AccountPoolAccountCfg is one entry in `smm.account_pool.accounts`.
 type AccountPoolAccountCfg struct {
 	Name          string `yaml:"name"`
 	CredentialDir string `yaml:"credential_dir"`
 	Priority      int    `yaml:"priority"`
 }
 
-// DefaultSMMConfig returns safe, fully-disabled defaults.
-func DefaultSMMConfig() SMMConfig {
-	return SMMConfig{
-		Enabled:    false,
-		StaticPlan: staticplan.DefaultConfig(),
-	}
+// StaticPlanCfg mirrors the `smm.static_plan` YAML block.
+type StaticPlanCfg struct {
+	Enabled                 bool   `yaml:"enabled"`
+	Mode                    string `yaml:"mode"`
+	MinBytes                int    `yaml:"min_bytes"`
+	CacheByHash             bool   `yaml:"cache_by_hash"`
+	FailOpen                bool   `yaml:"fail_open"`
+	ApplyToSubagents        bool   `yaml:"apply_to_subagents"`
+	ExperimentalMultimodal  bool   `yaml:"experimental_multimodal"`
 }
 
-// smmHooks is the real (non-noop) Hooks implementation.
+// smmHooks is the live implementation returned by NewSMMHooks when SMM is
+// enabled. It satisfies the Hooks interface defined in hooks.go.
 type smmHooks struct {
-	pool    *accountpool.Pool
-	planner *staticplan.Planner
-	cfg     SMMConfig
+	cfg    SMMConfig
+	pool   *accountpool.Pool
+	logger *log.Logger
 }
 
-// NewSMMHooks builds the real hooks implementation from SMMConfig.
-// Returns DefaultHooks() (noop) when disabled or misconfigured.
-//
-// staticplan.NewPlanner is only called when StaticPlan.Enabled is true AND
-// StaticPlan.Mode is not ModeOff. This ensures mode:off has zero allocation
-// cost — the planner nil-check in TransformStaticPayload is the kill switch.
-func NewSMMHooks(cfg SMMConfig) Hooks {
+// NewSMMHooks constructs and returns the active SMM hook implementation.
+// If cfg.Enabled is false, DefaultHooks() is returned and the pool is never
+// initialised — the noop path has zero overhead beyond a single interface call.
+func NewSMMHooks(cfg SMMConfig, logger *log.Logger) (Hooks, error) {
 	if !cfg.Enabled {
-		return DefaultHooks()
+		return DefaultHooks(), nil
 	}
 
-	// Build account pool.
 	var pool *accountpool.Pool
-	if cfg.AccountPool.Enabled && len(cfg.AccountPool.Accounts) > 0 {
-		accRefs := make([]accountpool.AccountRef, 0, len(cfg.AccountPool.Accounts))
+	if cfg.AccountPool.Enabled {
+		poolCfg := accountpool.PoolConfig{
+			MaxPreStreamRetries:     cfg.AccountPool.MaxPreStreamRetries,
+			CooldownSecondsAfter429: cfg.AccountPool.CooldownSecondsAfter429,
+			ApplyToSubagents:        cfg.AccountPool.ApplyToSubagents,
+		}
 		for _, a := range cfg.AccountPool.Accounts {
-			accRefs = append(accRefs, accountpool.AccountRef{
+			poolCfg.Accounts = append(poolCfg.Accounts, accountpool.AccountCfg{
 				Name:          a.Name,
 				CredentialDir: a.CredentialDir,
 				Priority:      a.Priority,
 			})
 		}
-		pool = accountpool.NewPool(accountpool.Config{
-			Enabled:             true,
-			MaxPreStreamRetries: cfg.AccountPool.MaxPreStreamRetries,
-			CooldownSeconds:     cfg.AccountPool.CooldownSeconds,
-			Accounts:            accRefs,
-		})
+		var err error
+		pool, err = accountpool.NewPool(poolCfg, logger)
+		if err != nil {
+			return nil, fmt.Errorf("smm: init account pool: %w", err)
+		}
 	}
 
-	// Build static planner only when explicitly enabled with a non-off mode.
-	// mode:off or enabled:false → planner stays nil → TransformStaticPayload
-	// returns immediately with zero allocations.
-	var planner *staticplan.Planner
-	if cfg.StaticPlan.Enabled && cfg.StaticPlan.Mode != staticplan.ModeOff {
-		planner = staticplan.NewPlanner(cfg.StaticPlan)
-	}
-
-	if pool == nil && planner == nil {
-		return DefaultHooks()
-	}
-	return &smmHooks{pool: pool, planner: planner, cfg: cfg}
+	return &smmHooks{
+		cfg:    cfg,
+		pool:   pool,
+		logger: logger,
+	}, nil
 }
 
-// BeforeForward selects an account from the pool and injects its Bearer token
-// into the outbound Authorization header. The selected AccountRef is stored in
-// fc.SelectedAccount — never in a request header — so it is never forwarded to
-// the upstream API.
-func (h *smmHooks) BeforeForward(ctx context.Context, fc *ForwardContext) error {
-	if h.pool == nil || (fc.ReqCtx.IsSubagent && !h.cfg.AccountPool.ApplyToSubagents) {
+// BeforeForward selects an account from the pool and injects its Authorization
+// header onto fc.OutboundReq. The selected AccountRef is stored in
+// fc.SelectedAccount — never in an outbound header — so Anthropic never sees
+// SMM-internal bookkeeping.
+func (h *smmHooks) BeforeForward(fc *ForwardContext) error {
+	if h.pool == nil {
 		return nil
 	}
+	if fc.ReqCtx.IsSubagent && !h.cfg.AccountPool.ApplyToSubagents {
+		return nil
+	}
+
 	meta := accountpool.RequestMeta{
 		ThreadID:   fc.ReqCtx.ThreadID,
-		SessionID:  fc.ReqCtx.SessionID,
-		Model:      fc.ReqCtx.Model,
 		IsSubagent: fc.ReqCtx.IsSubagent,
 	}
-	acc, err := h.pool.InjectAuthForAttempt(ctx, fc.OutboundReq, meta, fc.Attempt)
+
+	acc, token, err := h.pool.SelectAndGetToken(context.Background(), meta)
 	if err != nil {
-		log.Printf("[proxyext] BeforeForward: account injection failed (attempt=%d): %v", fc.Attempt, err)
-		observability.RecordAuthFailure("<unknown>")
-		return err
+		// Fail open: log and let the request proceed with whatever auth
+		// the client originally provided. This preserves the constraint
+		// "fail open everywhere except hard auth exhaustion".
+		if accountpool.IsExhausted(err) {
+			return fmt.Errorf("smm: all accounts exhausted: %w", err)
+		}
+		h.logger.Printf("[smm] BeforeForward: account selection error (fail open): %v", err)
+		return nil
 	}
-	// Store selected account in ForwardContext — never on the outbound request.
+
+	// Inject auth. The token is a Bearer string from the OAuth store.
+	fc.OutboundReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+
+	// Store the full ref in ForwardContext so OnPreStreamResponse can read
+	// it without reconstructing from a header string.
 	fc.SelectedAccount = acc
-	observability.RecordAccountSelected(acc.Name, fc.Attempt)
+
+	h.logger.Printf("[smm] smm_account_selected=%s smm_account_attempt=%d",
+		acc.Name, fc.Attempt)
 	return nil
 }
 
-// OnPreStreamResponse is called after upstream response headers are received
-// but before any body bytes are written to the client. It uses the full
-// AccountRef stored in fc.SelectedAccount (not a header reconstruction) to
-// correctly update state and decide whether to retry.
-func (h *smmHooks) OnPreStreamResponse(ctx context.Context, fc *ForwardContext, resp *http.Response) (RetryDecision, error) {
+// OnPreStreamResponse is called after the upstream response headers arrive but
+// before any bytes are written to the client. It reads fc.BytesFlushed as the
+// categorical gate: if true, no retry is possible and the decision is always
+// Retry:false. This check is also enforced by the hooks.go dispatcher, but we
+// check it here as defence-in-depth.
+func (h *smmHooks) OnPreStreamResponse(fc *ForwardContext, resp *http.Response) (RetryDecision, error) {
 	if h.pool == nil {
-		return RetryDecision{Retry: false}, nil
+		return RetryDecision{}, nil
 	}
-	// fc.SelectedAccount is the full AccountRef set by BeforeForward.
-	// streamStarted is always false here — this hook is called before flush.
-	shouldRetry := h.pool.ShouldRetry(fc.SelectedAccount, resp, false, fc.Attempt)
-	if shouldRetry {
-		observability.RecordQuotaHit(fc.SelectedAccount.Name)
-		return RetryDecision{
-			Retry:       true,
-			RetryReason: "pre_stream_quota",
-			MaxAttempts: h.cfg.AccountPool.MaxPreStreamRetries,
-		}, nil
+
+	// Hard rule: never retry after bytes have been flushed to the client.
+	if fc.BytesFlushed {
+		return RetryDecision{Retry: false, Reason: "bytes_already_flushed"}, nil
 	}
-	return RetryDecision{Retry: false}, nil
+
+	acc, ok := fc.SelectedAccount.(accountpool.AccountRef)
+	if !ok {
+		// No account was selected (pool disabled or fail-open fallback).
+		return RetryDecision{}, nil
+	}
+
+	decision, reason := h.pool.ShouldRetry(resp.StatusCode, fc.Attempt, acc)
+
+	h.logger.Printf("[smm] smm_retry_decision=%v smm_retry_reason=%s smm_account_attempt=%d status=%d",
+		decision, reason, fc.Attempt, resp.StatusCode)
+
+	if decision {
+		return RetryDecision{Retry: true, Reason: reason}, nil
+	}
+	return RetryDecision{Retry: false, Reason: reason}, nil
 }
 
-// OnPostResponse records the final outcome for the selected account.
-// Called after the stream ends or the non-streaming body is consumed.
-func (h *smmHooks) OnPostResponse(_ context.Context, fc *ForwardContext, result ForwardResult) {
+// OnPostResponse records per-account cache TTL observations and final outcome.
+func (h *smmHooks) OnPostResponse(fc *ForwardContext, result ForwardResult) {
 	if h.pool == nil {
 		return
 	}
-	// If the stream was already in progress when it failed, the account
-	// delivered bytes successfully — treat as success from the pool's view.
-	if result.StreamStarted && result.ClassifiedFailure != "" {
-		observability.RecordRetryBlockedAfterStream(fc.SelectedAccount.Name, result.StatusCode)
-		h.pool.RecordSuccess(fc.SelectedAccount)
+	acc, ok := fc.SelectedAccount.(accountpool.AccountRef)
+	if !ok {
 		return
 	}
-	if result.ClassifiedFailure == "" {
-		h.pool.RecordSuccess(fc.SelectedAccount)
+
+	outcome := accountpool.AccountResult{
+		StatusCode:          result.StatusCode,
+		CacheReadTokens:     result.CacheReadTokens,
+		CacheCreationTokens: result.CacheCreationTokens,
+		Err:                 result.Err,
 	}
+	h.pool.MarkResult(acc, outcome)
 }
 
-// TransformStaticPayload normalises or annotates the assembled prompt body
-// before it is forwarded. All paths fail open: on any error, panic, or
-// unexpected output, ap.RawBody is restored to its original value and the
-// request continues untransformed.
-//
-// Fail-open guarantees:
-//   - planner nil → immediate return, zero cost
-//   - subagent && !ApplyToSubagents → immediate return, metric emitted
-//   - Plan() returns !Eligible → immediate return, metric emitted
-//   - Apply() returns empty applied string or zero-length body → restore
-//     origBody, emit apply_noop_or_fail metric, return nil
-//   - panic inside Plan() or Apply() → caught by dispatcher in hooks.go,
-//     ap.RawBody is safe because assignment only occurs after nil/len checks
-func (h *smmHooks) TransformStaticPayload(_ context.Context, reqCtx RequestContext, ap *AssembledPrompt) error {
-	if h.planner == nil || ap == nil || len(ap.RawBody) == 0 {
-		return nil
-	}
-
-	// Explicit subagent bypass — never rely on Plan() internals for this.
-	if reqCtx.IsSubagent && !h.cfg.StaticPlan.ApplyToSubagents {
-		observability.RecordStaticPlan("noop", "subagent_bypass", true)
-		return nil
-	}
-
-	// Snapshot before any mutation. If Apply() produces bad output (empty
-	// applied string or zero-length body), we restore and the request
-	// continues with the original body. The panic recovery in the dispatcher
-	// also relies on this: ap.RawBody is only overwritten after all checks
-	// pass, so a mid-Apply panic leaves origBody as the safe fallback.
-	origBody := ap.RawBody
-
-	plan := h.planner.Plan(ap.RawBody, reqCtx.IsSubagent)
-	observability.RecordStaticPlan(string(plan.Mode), plan.Reason, !plan.Eligible)
-	if !plan.Eligible {
-		return nil
-	}
-
-	newBody, applied := h.planner.Apply(ap.RawBody, plan)
-
-	// Guard against silent failure: empty applied string OR zero-length body
-	// means the transform either found nothing to do or failed internally.
-	// Restore original and treat as noop — never forward a corrupted body.
-	if applied == "" || len(newBody) == 0 {
-		ap.RawBody = origBody
-		observability.RecordStaticPlan(string(plan.Mode), "apply_noop_or_fail", true)
-		return nil
-	}
-
-	ap.RawBody = newBody
-	ap.ContentHash = plan.ContentHash
-	ap.TransformApplied = applied
+// TransformStaticPayload is a no-op in v1. staticplan is present in the
+// package tree but is gated behind StaticPlanCfg.Enabled and mode != "off".
+// It is not wired into the prompt assembly stage until compress_context.go
+// has been audited for overlap.
+func (h *smmHooks) TransformStaticPayload(_ *ForwardContext, _ *AssembledPrompt) error {
 	return nil
 }

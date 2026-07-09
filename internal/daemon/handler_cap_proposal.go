@@ -147,13 +147,13 @@ func (h *Handler) handleListCapProposals(req Request) Response {
 		for _, l := range rows {
 			capName := strings.TrimPrefix(l.TriggerRule, "cap_proposed:")
 			out = append(out, map[string]any{
-				"id":          l.ID,
-				"cap_name":    capName,
-				"category":    l.Category,
-				"project":     l.Project,
-				"created_at":  l.CreatedAt,
-				"content":     l.Content,
-				"trigger":     l.TriggerRule,
+				"id":         l.ID,
+				"cap_name":   capName,
+				"category":   l.Category,
+				"project":    l.Project,
+				"created_at": l.CreatedAt,
+				"content":    l.Content,
+				"trigger":    l.TriggerRule,
 			})
 		}
 	}
@@ -184,7 +184,7 @@ func toInt64(v any) int64 {
 // auto_active, and any extra non-bash scripts in a bundle), and re-saves the
 // cap through the standard save_cap pipeline. project must match the
 // proposal's project so the 3-way project filter in GetActiveLearnings
-// (project = ? OR project IS NULL OR project = '') resolves the correct row.
+// (project = ? OR project IS NULL OR project = ”) resolves the correct row.
 func (h *Handler) acceptCapProposal(capName, project, scriptName, newBody string) (Response, error) {
 	activeCaps, err := h.store.GetActiveLearnings("cap", project, "", "", 0)
 	if err != nil {
@@ -244,6 +244,9 @@ func (h *Handler) acceptCapProposal(capName, project, scriptName, newBody string
 			tagsAny[i] = t
 		}
 		saveParams["tags"] = tagsAny
+	}
+	if activeMeta.Scope != "" {
+		saveParams["scope"] = activeMeta.Scope
 	}
 
 	return h.Handle(Request{Method: "save_cap", Params: saveParams}), nil

@@ -4,7 +4,7 @@ description: "Fetch Reddit posts"
 version: 1
 tags: [web, reddit]
 runtime: bash
-scope: project
+scope: user
 tested: true
 auto_active: true
 ---

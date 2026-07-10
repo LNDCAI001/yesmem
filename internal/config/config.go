@@ -39,6 +39,8 @@ type Config struct {
 	// Sessions with Project matching any of these paths are silently skipped.
 	// Example: ["/home", "/tmp"] prevents home-directory and temp-directory sessions.
 	ExcludeProjects []string `yaml:"exclude_projects"`
+	// SessionSources lists extra directories to watch for session .jsonl files (beyond ~/.claude/projects/).
+	SessionSources  []string `yaml:"session_sources"`
 	// SMM (Subscription Multi-Account) rotates across multiple Claude subscription accounts.
 	SMM *proxyext.SMMConfig `yaml:"smm"`
 }

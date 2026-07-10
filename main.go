@@ -8,15 +8,15 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/briefing"
-	"github.com/carsteneu/yesmem/internal/buildinfo"
-	"github.com/carsteneu/yesmem/internal/config"
-	"github.com/carsteneu/yesmem/internal/daemon"
-	"github.com/carsteneu/yesmem/internal/extraction"
-	"github.com/carsteneu/yesmem/internal/hooks"
-	yesmcp "github.com/carsteneu/yesmem/internal/mcp"
-	"github.com/carsteneu/yesmem/internal/setup"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/briefing"
+	"github.com/LNDCAI001/yesmem/internal/buildinfo"
+	"github.com/LNDCAI001/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/hooks"
+	yesmcp "github.com/LNDCAI001/yesmem/internal/mcp"
+	"github.com/LNDCAI001/yesmem/internal/setup"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // version is set at build time via: go build -ldflags "-X main.version=..."
@@ -243,7 +243,7 @@ func runDaemon() {
 		DataDir:          dataDir,
 		ProjectsDir:      projectsDir,
 		CodexSessionsDir: codexSessionsDir,
-		SessionSources:   []string{projectsDir, codexSessionsDir},
+		SessionSources:   append([]string{projectsDir, codexSessionsDir}, appCfg.SessionSources...),
 		Replace:          replace,
 		HTTPEnabled:      enableHTTP || appCfg.HTTP.Enabled,
 		HTTPListen:       appCfg.HTTP.Listen,

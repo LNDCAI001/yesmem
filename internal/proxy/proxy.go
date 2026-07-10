@@ -19,9 +19,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/buildinfo"
-	"github.com/carsteneu/yesmem/internal/config"
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/buildinfo"
+	"github.com/LNDCAI001/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/proxyext"
+	"github.com/LNDCAI001/yesmem/internal/models"
 	tokenizer "github.com/qhenkart/anthropic-tokenizer-go"
 )
 
@@ -77,6 +78,8 @@ type Config struct {
 	CacheKeepalivePings5m     int
 	CacheKeepalivePings1h     int
 	CacheKeepaliveMinMessages int // skip keepalive when request body has fewer messages (0 = always)
+	// SMM config for subscription multi-account rotation
+	SMM *proxyext.SMMConfig
 
 	// Forked agents
 	ForkedAgentsEnabled            bool
@@ -266,6 +269,8 @@ type Server struct {
 	// Injection overhead: per-thread delta between API-actual and local BPE estimate
 	injectionOverheadMu sync.RWMutex
 	injectionOverhead   map[string]int // threadID → overhead tokens
+	// SMM proxy extension configuration
+	smmCfg *proxyext.SMMConfig
 }
 
 // Run starts the proxy server and blocks until interrupted.
@@ -503,6 +508,16 @@ func Run(cfg Config) error {
 				s.logger.Printf("[reset-cache] deleted %d %s* entries", resp.Deleted, prefix)
 			}
 		}
+	}
+
+	// Initialise SMM hooks (if configured).
+	if s.cfg.SMM != nil && s.cfg.SMM.Enabled {
+		hooks, hookErr := proxyext.NewSMMHooks(*s.cfg.SMM, s.logger)
+		if hookErr != nil {
+			return fmt.Errorf("smm: init hooks: %w", hookErr)
+		}
+		proxyext.Init(hooks, s.cfg.SMM, s.logger)
+		s.smmCfg = s.cfg.SMM
 	}
 
 	// Init signal bus with daemon RPC as callback

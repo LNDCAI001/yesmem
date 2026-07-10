@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/config"
-	"github.com/carsteneu/yesmem/internal/proxy"
+	"github.com/LNDCAI001/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/proxy"
 )
 
 func runProxy() {
@@ -38,6 +38,7 @@ func runProxy() {
 		TokenThresholds:       cfg.Proxy.TokenThresholds,
 		KeepRecent:            cfg.Proxy.KeepRecent,
 		DataDir:               dataDir,
+		SMM:                  cfg.SMM,
 		OpenAITargetURL:       cfg.Proxy.OpenAITarget,
 		AutoConfigureProviders: cfg.Proxy.AutoConfigureProviders,
 		ProviderTargets:       cfg.Proxy.ProviderTargets,

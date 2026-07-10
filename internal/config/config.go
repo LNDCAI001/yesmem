@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/embedding"
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/embedding"
+	"github.com/LNDCAI001/yesmem/internal/proxyext"
+	"github.com/LNDCAI001/yesmem/internal/models"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,6 +39,8 @@ type Config struct {
 	// Sessions with Project matching any of these paths are silently skipped.
 	// Example: ["/home", "/tmp"] prevents home-directory and temp-directory sessions.
 	ExcludeProjects []string `yaml:"exclude_projects"`
+	// SMM (Subscription Multi-Account) rotates across multiple Claude subscription accounts.
+	SMM *proxyext.SMMConfig `yaml:"smm"`
 }
 
 // ModelPricing holds per-million-token pricing for a model.

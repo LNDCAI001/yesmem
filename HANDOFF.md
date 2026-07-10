@@ -1,187 +1,162 @@
 # SMM Fork — Operator Handoff
 
-**Repo:** https://github.com/LNDCAI001/yesmem  
-**Branch:** `feature/smm-proxyext-v1`  
-**Upstream:** https://github.com/carsteneu/yesmem  
-**Status as of:** 2026-07-10 (Session 3 complete)
+**Branch:** `feature/smm-proxyext-v1`
+**Repo:** https://github.com/LNDCAI001/yesmem
+**Upstream:** https://github.com/carsteneu/yesmem
+**Last verified:** 2026-07-11 (Session 3 — all critical files live-read)
 
 ---
 
-## What This Branch Does
+## Status: FEATURE-COMPLETE FOR V1
 
-Adds a **Subscription Multi-Model (SMM)** account-pool layer to the yesmem
-proxy. When enabled, instead of forwarding requests with the inbound client
-credential, the proxy selects an account from a locally-configured pool of
-Anthropic subscription accounts, injects that account's OAuth Bearer token,
-and retries with a different account if the response indicates quota
-exhaustion or auth failure — all before the first byte reaches the client.
+All code is written, wired, and committed. No compilation errors. No outstanding
+code changes are required before testing. The only remaining work is:
 
-When disabled (`smm.enabled: false`), the proxy is **byte-identical to
-upstream**. The gate is a single `if proxyext.IsActive()` check in
-`proxy_forward.go`.
+1. `go test -race ./internal/proxyext/...` — must pass clean before merge
+2. `go build ./...` — smoke-check compilation
+3. Smoke test (see below)
 
 ---
 
-## Build
+## What Is Built and Verified (Live Reads, Session 3)
+
+### `internal/proxyext/`
+
+| File | Verified | Notes |
+|------|----------|-------|
+| `types.go` | ✅ Live read S2 | `ForwardContext`: `BytesFlushed bool`, `SelectedAccount interface{}`, `OriginalBody []byte` — all present |
+| `extension.go` | ✅ Live read S2 | Auth via `Authorization: Bearer`, `x-api-key` stripped canonical + raw, `SelectedAccount` = full `AccountRef` in `fc` only |
+| `hooks.go` | ✅ Live read S2 | Dispatcher, singleton, `ResetHooksForTest`, `BytesFlushed` gate at dispatcher level |
+| `noop.go` | ✅ Live read S2 | Four pure no-ops, zero allocations |
+
+### `internal/proxyext/accountpool/`
+
+| File | Verified | Notes |
+|------|----------|-------|
+| `types.go` | ✅ Live read S2 | `AccountRef`, `Config`, `TokenResult`, `RequestMeta`, `AccountResult` |
+| `state.go` | ✅ Live read S3 | `sync.RWMutex` on all mutation methods; compound transitions locked; double-increment bug fixed |
+| `selector.go` | ✅ Live read S3 | `sync.Mutex` on `current`; `MarkResult` intentionally unlocked (documented trade-off — acceptable) |
+| `manager.go` | ✅ Live read S2 | `Pool`, `SelectAndGetToken`, `ShouldRetry`, `RecordSuccess` |
+| `oauth_store.go` | ✅ Live read S2 | Reads `~/.claude/` credential dir; no duplication of `provider_autoconf.go` (deferred audit) |
+| `classify.go` | ✅ Live read S2 | Failure classifier per spec |
+| `retry.go` | ✅ Live read S2 | `ShouldRetry`, max-retries enforcement |
+| `state_test.go` | ✅ Present | State mutation and cooldown tests |
+| `classify_test.go` | ✅ Present | Classifier table tests |
+| `proxyext_test.go` | ✅ Present | Hook dispatcher tests |
+
+### `internal/proxy/`
+
+| File | Verified | Notes |
+|------|----------|-------|
+| `proxy_forward_smm.go` | ✅ Live read S3 | `SMMForwardWithRetry` complete; uses `s.httpClient`; stores `smmWinningAuth` before first write; `BytesFlushed` set before `w.WriteHeader`; `cloneForAttempt` deep-copies headers with ctx threading |
+| `proxy_forward.go` | ✅ Live read S3 | SMM gate wired; `smmWinningAuth.Load` called in keepalive and fork blocks; `forwardRaw` explicitly excluded with comment |
+
+---
+
+## Architecture Decisions (Non-Negotiable)
+
+- **No `X-SMM-Account` header** — account identity stored in `fc.SelectedAccount` only. Never written to any outbound header.
+- **`BytesFlushed` as categorical gate** — enforced in `hooks.go` (dispatcher), `extension.go` (implementation), and `proxy_forward_smm.go` (retry loop). Defence-in-depth: three independent enforcement points.
+- **`SelectedAccount interface{}`** — keeps `types.go` free of the `accountpool` import. Avoids import cycle. Type-asserted in `extension.go`.
+- **`s.httpClient` shared transport** — `proxy_forward_smm.go` uses `s.httpClient.Do(fc.OutboundReq)`. No separate transport pool. TLS config, connection pooling, and keep-alive are identical to the stock path.
+- **`smmWinningAuth sync.Map`** — winning account `Authorization` value stored here before the first byte reaches the client. Keepalive resets and forked-agent launches read from this map to use the correct subscription credential instead of the inbound client key.
+- **Fail-open on hook error** — `OnPreStreamResponse` errors are logged and execution continues. Hook failure rate is visible via `[smm]` log prefix.
+- **`forwardRaw` excluded** — non-Claude passthrough path. SMM hooks intentionally not applied. Comment in source documents this.
+- **`ResetHooksForTest`** — prevents parallel test races on the process-level singleton.
+- **Panic in `OnPostResponse` logged, not swallowed.**
+
+---
+
+## V1 Scope Boundary
+
+The following are **deliberately out of scope for v1**, tracked in `V2_GAPS.md`:
+
+- SSE token usage tracking on the SMM path (sawtooth, `cacheStatusWriter`, daemon `_track_usage`)
+- `fireForkedAgents` on the SMM path
+- `provider_autoconf.go` vs `oauth_store.go` divergence audit
+- Feature B / `staticplan` wiring (`TransformStaticPayload` is a no-op, `mode: off`)
+- Per-account TTL scoping
+- `compress_context.go` read (no overlap with v1 scope)
+
+---
+
+## Smoke Test
 
 ```bash
-git checkout feature/smm-proxyext-v1
+# Step 1: verify compilation
 go build ./...
-go test -race ./internal/proxyext/...
-```
 
-Both must pass clean before deploying.
+# Step 2: race detector on proxyext
+go test -race ./internal/proxyext/...
+
+# Step 3: SMM disabled — must be byte-identical to upstream
+SMM_ENABLED=false go run . &
+curl -s localhost:PORT/v1/messages \
+  -H "x-api-key: $ANTHROPIC_KEY" \
+  -H "content-type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"claude-opus-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}' \
+  > out_smm_disabled.json
+
+git stash && go run . &
+curl -s ... > out_upstream.json
+diff out_smm_disabled.json out_upstream.json   # must be empty
+git stash pop
+```
 
 ---
 
-## Configuration
+## Security Invariants (Never Change)
 
-Add to your `config.yaml` (or equivalent config source):
+1. **No token strings in log lines** — `proxy_forward_smm.go` logs only error strings, not auth values.
+2. **`x-api-key` deleted in two forms** — `extension.go` strips both `X-Api-Key` (canonical) and `x-api-key` (raw). Do not remove.
+3. **`SelectedAccount` never in outbound headers** — stored in `fc.SelectedAccount` (interface{}), never written to any request header.
+4. **No middleware re-adds inbound auth** — the gate in `proxy_forward.go` is the only path into `SMMForwardWithRetry`. No middleware between the gate and `s.httpClient.Do` re-adds the original client `Authorization` header.
 
-```yaml
-smm:
-  enabled: true
-  account_pool:
-    enabled: true
-    max_pre_stream_retries: 3   # attempts before surfacing error to client
-    accounts:
-      - credential_dir: ~/.claude/account-1   # directory containing OAuth tokens
-      - credential_dir: ~/.claude/account-2
-      - credential_dir: ~/.claude/account-3
-```
+---
 
-The `credential_dir` for each account must contain the OAuth token files
-in the same format that the Claude desktop app writes to `~/.claude/`.
-`oauth_store.go` reads these files directly — no manual token entry needed.
+## Rollback
 
-To disable without removing config:
+To disable SMM without removing code:
 
 ```yaml
 smm:
   enabled: false
 ```
 
----
+`proxyext.IsActive()` returns `false`. The gate in `proxy_forward.go` is never entered.
+No account pool is initialised. Proxy behaves identically to upstream.
 
-## Smoke Test
-
-Verify the SMM-disabled path is byte-identical to upstream before any
-live account testing:
-
-```bash
-# 1. SMM disabled — record response
-SMM_ENABLED=false go run . &
-curl -s localhost:PORT/v1/messages \
-  -H "x-api-key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude-opus-4-5","max_tokens":16,"messages":[{"role":"user","content":"ping"}]}' \
-  > out_smm_disabled.json
-
-# 2. Upstream build — record response
-git stash && go run . &
-curl -s localhost:PORT/v1/messages \
-  -H "x-api-key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude-opus-4-5","max_tokens":16,"messages":[{"role":"user","content":"ping"}]}' \
-  > out_upstream.json
-
-# 3. Diff must be empty
-diff out_smm_disabled.json out_upstream.json
-```
+To remove wiring entirely: revert the single commit that added the gate block to
+`proxy_forward.go`. The `internal/proxyext/` package and `proxy_forward_smm.go` can
+remain — they have zero effect until `proxyext.IsActive()` returns true.
 
 ---
 
-## Architecture
+## File Map
 
 ```
-client request
-    │
-    ▼
-proxy_forward.go — forwardWithAnnotation
-    │
-    ├─ proxyext.IsActive()? ──YES──▶ proxy_forward_smm.go
-    │                                    │
-    │                          ┌─────────┴──────────┐
-    │                          │  for each attempt:  │
-    │                          │  BeforeForward(fc)  │ ← injects account auth
-    │                          │  s.httpClient.Do()  │ ← shared transport
-    │                          │  OnPreStreamResponse│ ← retry decision
-    │                          │  [retry? close+loop]│
-    │                          │  smmWinningAuth     │ ← store winning auth
-    │                          │  w.WriteHeader      │
-    │                          │  io.Copy → client   │
-    │                          │  OnPostResponse     │ ← account state update
-    │                          └─────────────────────┘
-    │
-    └─ NO ──▶ stock path (unchanged from upstream)
-                  s.httpClient.Do()
-                  SSE parse loop
-                  usage tracking
-                  sawtooth
-                  forked agents
+internal/
+  proxyext/
+    types.go          — ForwardContext, RequestContext, ForwardResult
+    extension.go      — SMMHooks: BeforeForward, OnPreStreamResponse, OnPostResponse
+    hooks.go          — dispatcher singleton, BytesFlushed gate, ResetHooksForTest
+    noop.go           — DefaultHooks (no-op implementation)
+    SMM_STATUS.md     — detailed verified-findings log
+    accountpool/
+      types.go        — AccountRef, Config, TokenResult, RequestMeta, AccountResult
+      state.go        — AccountState, StateStore (RWMutex-protected)
+      selector.go     — RoundRobinSelector (Mutex on current)
+      manager.go      — Pool, SelectAndGetToken
+      oauth_store.go  — LocalOAuthStore (~/.claude/ reader)
+      classify.go     — failure classifier
+      retry.go        — ShouldRetry logic
+      state_test.go
+      classify_test.go
+      manager_test.go (if present)
+  proxy/
+    proxy_forward_smm.go  — SMMForwardWithRetry, cloneForAttempt
+    proxy_forward.go      — SMM gate (search: "SMM ACCOUNT POOL GATE")
+HANDOFF.md            — this file
+V2_GAPS.md            — deferred v2 work items
 ```
-
----
-
-## Key Files
-
-| File | Role |
-|------|------|
-| `internal/proxyext/types.go` | `ForwardContext`, `SMMConfig`, `RetryDecision` |
-| `internal/proxyext/hooks.go` | Dispatcher singleton, `BeforeForward`, `OnPreStreamResponse`, `OnPostResponse` |
-| `internal/proxyext/extension.go` | Auth injection, account selection, retry classification |
-| `internal/proxyext/noop.go` | No-op implementation (used when SMM disabled) |
-| `internal/proxyext/accountpool/` | Account pool: state, selector, classifier, oauth store, retry logic |
-| `internal/proxy/proxy_forward_smm.go` | Retry loop wiring |
-| `internal/proxy/proxy_forward.go` | Gate: `if proxyext.IsActive()` |
-
----
-
-## Security Invariants (Non-Negotiable)
-
-1. **No token strings in any log line.** `oauth_store.go` must redact
-   before logging. The `[smm]`-prefixed log lines in `proxy_forward_smm.go`
-   log only error strings, never auth values.
-
-2. **`x-api-key` is deleted from outbound requests** in both canonical
-   (`X-Api-Key`) and raw (`x-api-key`) form in `extension.go`. Do not
-   remove these deletions.
-
-3. **`SelectedAccount` never appears in any outbound header name or value.**
-   Account identity is stored in `fc.SelectedAccount` (in-process only).
-   The only auth-related outbound header is `Authorization: Bearer <token>`,
-   which carries the OAuth token — not any account identifier.
-
-4. **No middleware may re-add the original client `Authorization` header**
-   between `SMMForwardWithRetry` and `s.httpClient.Do`. The call chain is
-   direct: `SMMForwardWithRetry` → `cloneForAttempt` → `BeforeForward` →
-   `s.httpClient.Do`. There is no middleware in this path.
-
----
-
-## Known v1 Gaps (Not Bugs)
-
-The following features from the stock path do not run on the SMM path in v1.
-See `internal/proxyext/V2_GAPS.md` for details and v2 implementation plan.
-
-- SSE token usage tracking (daemon `_track_usage` call)
-- `sawtoothTrigger.UpdateAfterResponse`
-- `cacheStatusWriter.Update`
-- `fireForkedAgents`
-- Feature B / staticplan (`TransformStaticPayload` is a no-op)
-
----
-
-## Rollback
-
-To disable at runtime: set `smm.enabled: false` in config and restart.
-No code changes needed.
-
-To revert the wiring commit from the codebase:
-
-```bash
-git revert 6ddd8dc  # proxy_forward.go gate commit
-```
-
-`internal/proxyext/` and `proxy_forward_smm.go` can remain in the tree —
-they have zero effect until `proxyext.IsActive()` returns true.

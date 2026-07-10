@@ -1,6 +1,8 @@
 package proxyext
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"sync"
 )
@@ -39,17 +41,19 @@ var (
 	hooksMu     sync.RWMutex
 	activeHooks Hooks
 	activeCfg   *SMMConfig
+	dispatchLog *log.Logger
 )
 
 // Init sets the process-wide hook implementation and config. Called once at
 // server startup from proxy.go. Calling Init again replaces the previous
 // implementation (safe for tests via ResetHooksForTest; not recommended in
 // production).
-func Init(h Hooks, cfg *SMMConfig) {
+func Init(h Hooks, cfg *SMMConfig, logger *log.Logger) {
 	hooksMu.Lock()
 	defer hooksMu.Unlock()
 	activeHooks = h
 	activeCfg = cfg
+	dispatchLog = logger
 }
 
 // ResetHooksForTest restores the singleton to its zero state. Call it in
@@ -60,6 +64,7 @@ func ResetHooksForTest() {
 	defer hooksMu.Unlock()
 	activeHooks = nil
 	activeCfg = nil
+	dispatchLog = nil
 }
 
 // IsActive returns true if a non-noop Hooks implementation is installed.
@@ -122,18 +127,23 @@ func OnPreStreamResponse(fc *ForwardContext, resp *http.Response) (RetryDecision
 
 // OnPostResponse dispatches to the active implementation. Panics in the
 // implementation are recovered and logged to prevent a misbehaving hook from
-// crashing the server.
+// crashing the server. The recovered value is always logged — silent discard
+// would mask bugs in the hook implementation.
 func OnPostResponse(fc *ForwardContext, result ForwardResult) {
 	hooksMu.RLock()
 	h := activeHooks
+	l := dispatchLog
 	hooksMu.RUnlock()
 	if h == nil {
 		return
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			// Log and continue — a panicking hook must not crash the server.
-			_ = r
+			// Log the panic value so operators can diagnose misbehaving hooks.
+			// We do not re-panic — a hook panic must never crash the server.
+			if l != nil {
+				l.Printf("[smm] OnPostResponse panic recovered: %s", fmt.Sprintf("%v", r))
+			}
 		}
 	}()
 	h.OnPostResponse(fc, result)

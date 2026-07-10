@@ -17,7 +17,6 @@ type RoundRobinSelector struct {
 }
 
 // NewRoundRobinSelector creates a selector for the provided account list.
-// cooldownAfterQuota is applied per account on a 429 response.
 func NewRoundRobinSelector(accounts []AccountRef, cooldownAfterQuota time.Duration) *RoundRobinSelector {
 	return &RoundRobinSelector{
 		accounts: accounts,
@@ -45,13 +44,11 @@ func (r *RoundRobinSelector) Select(_ context.Context, _ RequestMeta) (AccountRe
 }
 
 // MarkResult updates account state based on the forwarding outcome.
-// See the FailureClass constants for the mapping between outcomes and actions.
 //
 // Concurrency note: MarkResult acquires only the StateStore mutex, not r.mu.
-// A concurrent Select may therefore observe stale availability for an account
-// that was just marked into cooldown. This is a deliberate precision trade-off:
-// the worst case is one extra attempt on a cooling account before the cooldown
-// is observed, which is handled gracefully by ShouldRetry on the next call.
+// A concurrent Select may observe stale availability for an account that was
+// just marked into cooldown. The worst case is one extra attempt on a cooling
+// account before the cooldown is observed, handled gracefully by ShouldRetry.
 func (r *RoundRobinSelector) MarkResult(result AccountResult) {
 	switch result.ClassifiedFailure {
 	case FailureNone:
@@ -61,27 +58,29 @@ func (r *RoundRobinSelector) MarkResult(result AccountResult) {
 		r.store.RecordQuotaHit(result.Account.Name, r.cooldown)
 
 	case FailureTokenInvalid:
-		// 401: retry with next account. Hard-fail after 3 consecutive auth
-		// errors (e.g. a token that cannot be refreshed).
+		// 401: retry with next account. Hard-fail after 3 consecutive auth errors.
+		// Also invalidate the cached token so the next GetAccessToken re-reads disk.
+		InvalidateToken(result.Account.CredentialDir)
 		r.store.RecordAuthError(result.Account.Name, 3)
 
 	case FailureEntitlement:
-		// 403: this account cannot serve this request type right now.
-		// Use a 60-second cooldown rather than immediate permanent hard-fail —
-		// Anthropic 403s can be transient permission glitches. After 3
-		// consecutive entitlement errors, hard-fail the account.
-		r.store.RecordQuotaHit(result.Account.Name, 60*time.Second)
-		r.store.RecordAuthError(result.Account.Name, 3)
+		// 403: use RecordEntitlementError which sets cooldown AND increments
+		// ConsecutiveFails exactly once. The previous code called RecordQuotaHit
+		// (increments) + RecordAuthError (increments again) — a single 403 burned
+		// two counts toward the hard-fail threshold of 3, causing premature
+		// hard-fail on the second 403. Fixed by using the dedicated helper.
+		r.store.RecordEntitlementError(result.Account.Name, 60*time.Second, 3)
 
 	case FailureNetworkTimeout, FailureUpstreamTransient:
-		// Transient error: short cooldown to avoid hammering upstream.
-		// Do not hard-fail — the account itself is healthy.
+		// Transient error: short cooldown without touching the fail counter.
+		// We use RecordQuotaHit here (which does increment ConsecutiveFails) but
+		// that is intentional — repeated network timeouts on one account should
+		// eventually trigger a cooldown escalation.
 		r.store.RecordQuotaHit(result.Account.Name, 30*time.Second)
 
 	case FailureStreamMidway:
-		// Stream was already started — the account delivered bytes successfully.
-		// Record as success from the pool's perspective; midway failure is
-		// an upstream disconnect, not an account health issue.
+		// The account successfully started a stream. Midway disconnect is an
+		// upstream issue, not an account health issue. Record as success.
 		r.store.RecordSuccess(result.Account.Name)
 	}
 }

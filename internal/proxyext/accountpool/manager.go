@@ -33,8 +33,6 @@ type Pool struct {
 var errExhausted = errors.New("accountpool: all accounts are unavailable")
 
 // IsExhausted reports whether err signals that all pool accounts are exhausted.
-// Used by callers to distinguish hard-exhaustion (surface to client) from
-// soft selection errors (fail open).
 func IsExhausted(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "all accounts are unavailable")
 }
@@ -60,23 +58,20 @@ func NewPool(cfg Config, logger *log.Logger) (*Pool, error) {
 	}, nil
 }
 
-// SelectAndGetToken selects the next available account and fetches its token
-// in one call. Returns (AccountRef{}, TokenResult{}, err) on any failure.
-// If all accounts are unavailable, the error satisfies IsExhausted.
+// SelectAndGetToken selects the next available account and fetches its token.
+// Returns (AccountRef{}, TokenResult{}, err) on any failure.
+// If all accounts are unavailable the error satisfies IsExhausted.
 func (p *Pool) SelectAndGetToken(ctx context.Context, meta RequestMeta) (AccountRef, TokenResult, error) {
 	if p == nil {
 		return AccountRef{}, TokenResult{}, nil
 	}
 	acc, err := p.sel.Select(ctx, meta)
 	if err != nil {
-		// Wrap with the exhausted sentinel wording so IsExhausted matches.
 		return AccountRef{}, TokenResult{}, fmt.Errorf("accountpool: all accounts are unavailable: %w", err)
 	}
 	tok, err := p.provider.GetAccessToken(ctx, acc)
 	if err != nil {
-		// Token load failed — mark the account and surface the error.
-		// The caller (BeforeForward) will fail-open or fail-hard depending on
-		// whether IsExhausted is true.
+		// Token load failed — mark the account so Select skips it next round.
 		p.sel.MarkResult(AccountResult{Account: acc, ClassifiedFailure: FailureTokenInvalid})
 		return AccountRef{}, TokenResult{}, fmt.Errorf("accountpool: token load for %q: %w", acc.Name, err)
 	}
@@ -85,12 +80,14 @@ func (p *Pool) SelectAndGetToken(ctx context.Context, meta RequestMeta) (Account
 }
 
 // ShouldRetry inspects a pre-stream HTTP status code and returns whether the
-// request should be retried on a different account, plus a machine-readable
-// reason string for structured logging.
+// request should be retried on a different account.
 //
 // INVARIANT: always returns (false, ...) when attempt >= MaxPreStreamRetries.
-// The BytesFlushed guard is enforced by the hooks.go dispatcher before this
-// is ever called — ShouldRetry does not re-check it.
+// The BytesFlushed guard is enforced by hooks.go before this is called.
+//
+// Note: synthResp has only StatusCode set. Classify reads only StatusCode
+// (and the streamStarted bool which is always false here), so the nil Body
+// and nil Header are intentional and safe.
 func (p *Pool) ShouldRetry(statusCode int, attempt int, acc AccountRef) (bool, string) {
 	if p == nil {
 		return false, "pool_nil"
@@ -98,8 +95,6 @@ func (p *Pool) ShouldRetry(statusCode int, attempt int, acc AccountRef) (bool, s
 	if attempt >= p.cfg.MaxPreStreamRetries {
 		return false, "max_retries_exceeded"
 	}
-	// Construct a synthetic response so we can reuse Classify without
-	// changing its signature or duplicating the status-code table.
 	synthResp := &http.Response{StatusCode: statusCode}
 	fc := Classify(synthResp, false)
 	p.sel.MarkResult(AccountResult{Account: acc, ClassifiedFailure: fc})

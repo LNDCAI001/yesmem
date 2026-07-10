@@ -5,7 +5,10 @@ import "net/http"
 // Classify maps an HTTP response to a FailureClass.
 // streamStarted must be true if any body bytes were flushed to the client
 // before this call — in that case Classify always returns FailureStreamMidway
-// regardless of status code, ensuring the never-replay invariant.
+// regardless of status code, enforcing the never-replay invariant.
+//
+// resp may be nil (transport error / connection timeout) — that case returns
+// FailureNetworkTimeout.
 func Classify(resp *http.Response, streamStarted bool) FailureClass {
 	if streamStarted {
 		return FailureStreamMidway

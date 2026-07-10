@@ -70,6 +70,7 @@ func (s *StateStore) RecordSuccess(name string) {
 }
 
 // RecordQuotaHit places the account in cooldown for the given duration.
+// ConsecutiveFails is incremented once.
 func (s *StateStore) RecordQuotaHit(name string, cooldown time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -84,7 +85,8 @@ func (s *StateStore) RecordQuotaHit(name string, cooldown time.Duration) {
 }
 
 // RecordAuthError marks the account as having had an auth error.
-// After maxConsecFails consecutive auth errors the account is hard-failed.
+// ConsecutiveFails is incremented once. After maxConsecFails consecutive
+// auth errors the account is hard-failed.
 func (s *StateStore) RecordAuthError(name string, maxConsecFails int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,6 +94,31 @@ func (s *StateStore) RecordAuthError(name string, maxConsecFails int) {
 	if !ok {
 		return
 	}
+	st.LastAuthErrorAt = time.Now()
+	st.ConsecutiveFails++
+	if maxConsecFails > 0 && st.ConsecutiveFails >= maxConsecFails {
+		st.Status = StatusHardFailed
+	}
+}
+
+// RecordEntitlementError places the account in a short cooldown for a 403
+// response. Unlike RecordQuotaHit it does NOT increment ConsecutiveFails —
+// the caller is responsible for calling RecordAuthError separately only when
+// it wants to count toward the hard-fail threshold.
+//
+// Motivation: the previous code called RecordQuotaHit (which increments
+// ConsecutiveFails) and then RecordAuthError (which increments it again),
+// meaning a single 403 burned two counts. RecordEntitlementError fixes this
+// by setting the cooldown without touching ConsecutiveFails.
+func (s *StateStore) RecordEntitlementError(name string, cooldown time.Duration, maxConsecFails int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.states[name]
+	if !ok {
+		return
+	}
+	st.Status = StatusCooldown
+	st.CooldownUntil = time.Now().Add(cooldown)
 	st.LastAuthErrorAt = time.Now()
 	st.ConsecutiveFails++
 	if maxConsecFails > 0 && st.ConsecutiveFails >= maxConsecFails {

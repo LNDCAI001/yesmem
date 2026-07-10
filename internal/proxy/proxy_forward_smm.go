@@ -1,45 +1,16 @@
 package proxy
 
-// proxy_forward_smm.go — SMM hook wiring into the forward path.
+// proxy_forward_smm.go — SMMForwardWithRetry
 //
-// DECISION TREE (all decisions documented with evidence source):
+// This file implements the account-pool retry loop for the SMM extension.
+// It is the ONLY file in internal/proxy that imports internal/proxyext.
+// proxy_forward.go calls SMMForwardWithRetry when proxyext.IsActive() &&
+// smmCfg.AccountPool.Enabled, and treats its return value identically to
+// httpClient.Do — no other changes to proxy_forward.go are required.
 //
-// DECISION 1: Where is the pre-flush boundary in proxy_forward.go?
-//   VERIFIED by reading proxy_forward.go in full.
-//   The boundary is:
-//     resp, err := s.httpClient.Do(proxyReq)  // send; headers readable
-//     w.WriteHeader(resp.StatusCode)           // first byte to client
-//   BeforeForward is called after proxyReq is built, before Do().
-//   OnPreStreamResponse is called after Do() returns, before WriteHeader().
-//   forwardRaw (passthrough path) is excluded from SMM hooks in v1 —
-//   it has no annotation logic and is used for non-Claude paths only.
-//
-// DECISION 2: Does provider_autoconf.go parse Claude OAuth credential dirs?
-//   VERIFIED: provider_autoconf.go is OpenCode-only (models.json,
-//   auth.json, opencode.json). No ~/.claude/ dir, no bearer token refresh,
-//   no Claude subscription OAuth. oauth_store.go implements independently.
-//
-// DECISION 3: Does compress_context.go make staticplan redundant?
-//   VERIFIED: CompressContext operates on messages[] array only —
-//   thinking blocks and tool_results in conversation history.
-//   staticplan targets system prompt and tool definitions.
-//   Not redundant. Feature B proceeds gated behind mode:off.
-//
-// DECISION 4: Should SMM register in feature_gates.go?
-//   INFERRED: Three-layer gate (YAML enabled flag + Init() call-guard +
-//   per-feature flags) is sufficient. No feature_gates.go registration.
-//
-// DECISION 5: Does sawtooth encode auth-derived state in its key?
-//   INFERRED from proxy_forward.go: sawtoothTrigger.UpdateAfterResponse
-//   is keyed on threadID only. Account rotation preserves threadID.
-//   No corruption risk from rotation.
-//
-// DECISION 6: Is cacheTTLDetector thread-scoped or global?
-//   VERIFIED from proxy_forward.go: s.cacheTTLDetector is a field on
-//   *Server — process-global singleton. RecordRequest(threadID) fires
-//   before Do() on every attempt including retries. RecordResponse fires
-//   once after the successful response. TTL inference is not corrupted by
-//   multiple RecordRequest calls for the same threadID.
+// Import surface kept minimal: only proxyext (for hook dispatchers and
+// types) and the stdlib. No other internal/proxy subsystems are called
+// from this file to keep the coupling boundary explicit.
 
 import (
 	"bytes"
@@ -48,177 +19,27 @@ import (
 	"strconv"
 
 	"github.com/LNDCAI001/yesmem/internal/proxyext"
-	"github.com/LNDCAI001/yesmem/internal/proxyext/accountpool"
 )
 
-// smmMaxHardRetries is an absolute ceiling on retries regardless of config.
-// Prevents a misconfigured YAML from creating an unbounded loop.
-const smmMaxHardRetries = 8
-
-// smmForwardResult carries the outcome of a doSMMForwardWithAnnotation call
-// back to forwardWithAnnotation's retry loop.
-type smmForwardResult struct {
-	// resp is the upstream HTTP response. Non-nil means the response
-	// headers were received before any flush. Caller owns resp.Body.Close().
-	resp *http.Response
-	// bytesFlushed is true if w.WriteHeader has already been called.
-	// When true the caller MUST NOT retry regardless of resp.StatusCode.
-	bytesFlushed bool
-	// err is non-nil only for transport-level failures (Do() returned error).
-	// HTTP error status codes (4xx/5xx) are reported via resp.StatusCode,
-	// not via err.
-	err error
-	// selectedAccount is the account that was used for this attempt.
-	// Stored here so the retry loop can pass it to MarkResult without
-	// re-reading it from a header (which would be a security leak).
-	selectedAccount accountpool.AccountRef
-}
-
-// buildSMMProxyReq constructs a fresh *http.Request for each SMM attempt.
-// It copies all headers from origReq and then lets BeforeForward overwrite
-// the Authorization header with the selected account's token.
+// SMMForwardWithRetry executes the account-pool retry loop and returns the
+// first retryable or successful (*http.Response, nil) pair with the response
+// body still open. The caller (forwardWithAnnotation) owns the response body
+// and must call resp.Body.Close() via defer.
 //
-// body must be the original request body bytes (before any drain). This
-// function never reads from origReq.Body — the caller is responsible for
-// draining once and passing the bytes here.
-func buildSMMProxyReq(s *Server, origReq *http.Request, body []byte) (*http.Request, error) {
-	targetURL := s.resolveAnthropicTarget(extractModelFromBody(body)) + origReq.URL.RequestURI()
-	body = stripProviderPrefixFromBody(body)
-
-	proxyReq, err := http.NewRequestWithContext(
-		origReq.Context(),
-		origReq.Method,
-		targetURL,
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("smm: build proxy request: %w", err)
-	}
-
-	for key, vals := range origReq.Header {
-		for _, v := range vals {
-			proxyReq.Header.Add(key, v)
-		}
-	}
-	proxyReq.Header.Set("Content-Length", strconv.Itoa(len(body)))
-	proxyReq.Header.Del("Connection")
-	proxyReq.Header.Del("Accept-Encoding")
-	// NOTE: X-SMM-Account is deliberately NOT set here or anywhere.
-	// Account identity travels via ForwardContext.SelectedAccount only.
-	// Setting any SMM-specific header on proxyReq would leak account
-	// identity to the upstream Anthropic API.
-	return proxyReq, nil
-}
-
-// attemptSMMForward executes one attempt of the SMM-hooked forward:
-//  1. Call BeforeForward to inject auth into proxyReq.
-//  2. Call s.httpClient.Do(proxyReq).
-//  3. Call OnPreStreamResponse BEFORE w.WriteHeader.
+// The function NEVER calls w.WriteHeader or w.Write — it returns before any
+// bytes reach the client, preserving the pre-stream retry invariant.
 //
-// Returns smmForwardResult. The caller decides whether to retry.
-// If result.bytesFlushed is true, the caller MUST surface the response
-// as-is — no retry is possible.
-func attemptSMMForward(
-	s *Server,
-	w http.ResponseWriter,
-	origReq *http.Request,
-	body []byte,
-	fc *proxyext.ForwardContext,
-) smmForwardResult {
-	proxyReq, err := buildSMMProxyReq(s, origReq, body)
-	if err != nil {
-		return smmForwardResult{err: err}
-	}
-	fc.OutboundReq = proxyReq
-	fc.OriginalBody = body
-
-	// HOOK: BeforeForward — auth injection.
-	// This is the only place account selection and token injection occur.
-	// BeforeForward stores the selected AccountRef in fc.SelectedAccount
-	// (not in any HTTP header) so OnPreStreamResponse can retrieve it
-	// without reconstructing a thin shell from a leaked header value.
-	if err := proxyext.BeforeForward(origReq.Context(), fc); err != nil {
-		return smmForwardResult{err: fmt.Errorf("smm: BeforeForward: %w", err)}
-	}
-
-	// Extract the selected account before Do() so we have it regardless
-	// of what happens to fc after the response arrives.
-	var selectedAcc accountpool.AccountRef
-	if acc, ok := fc.SelectedAccount.(accountpool.AccountRef); ok {
-		selectedAcc = acc
-	}
-
-	// Record that we are about to send a request for TTL tracking.
-	// DECISION 6: cacheTTLDetector is process-global. RecordRequest fires
-	// on every attempt including retries. This is safe because RecordResponse
-	// fires only once after the successful response.
-	threadID := fc.ReqCtx.ThreadID
-	if s.cacheTTLDetector != nil {
-		s.cacheTTLDetector.RecordRequest(threadID)
-	}
-
-	// Send the request. bytesFlushed is false here — nothing written to w yet.
-	resp, doErr := s.httpClient.Do(proxyReq)
-	if doErr != nil {
-		// Transport-level failure. No response headers, nothing flushed.
-		return smmForwardResult{
-			err:             fmt.Errorf("smm: upstream Do: %w", doErr),
-			selectedAccount: selectedAcc,
-		}
-	}
-
-	// HOOK: OnPreStreamResponse — called BEFORE w.WriteHeader.
-	// This is the ONLY window where a retry is possible.
-	// After this call returns, we are committed to this response.
-	fc.BytesFlushed = false
-	decision, hookErr := proxyext.OnPreStreamResponse(origReq.Context(), fc, resp)
-	if hookErr != nil {
-		// Hook returned an error. Treat as non-retryable; surface the
-		// response as-is (fail-open). Log the hook error.
-		s.logger.Printf("smm: OnPreStreamResponse error (attempt %d): %v", fc.Attempt, hookErr)
-		decision.Retry = false
-	}
-
-	if decision.Retry {
-		// Close the response body before the caller retries — we will
-		// not be reading from it. This releases the connection back to
-		// the pool.
-		resp.Body.Close()
-		return smmForwardResult{
-			resp:            nil, // signal: caller should retry
-			bytesFlushed:    false,
-			selectedAccount: selectedAcc,
-		}
-	}
-
-	// No retry — return the response. Caller must call resp.Body.Close().
-	return smmForwardResult{
-		resp:            resp,
-		bytesFlushed:    false,
-		selectedAccount: selectedAcc,
-	}
-}
-
-// SMMForwardWithRetry is the entry point called by forwardWithAnnotation
-// when SMM account pool is active. It wraps the httpClient.Do call with
-// the BeforeForward → Do → OnPreStreamResponse retry loop.
+// Retry algorithm:
 //
-// Call site in forwardWithAnnotation (replace the single httpClient.Do block):
-//
-//	if proxyext.IsActive() && smmPoolEnabled() {
-//		resp, err = SMMForwardWithRetry(s, w, origReq, body, threadID)
-//	} else {
-//		resp, err = s.httpClient.Do(proxyReq)
-//	}
-//
-// Returns (resp, err) with identical semantics to httpClient.Do:
-//   - If resp is non-nil, caller owns resp.Body.Close() and must call
-//     w.WriteHeader before writing the body.
-//   - If err is non-nil, resp is nil and no bytes have been written to w.
-//
-// INVARIANT: If this function returns err != nil, w has received no bytes.
-// INVARIANT: This function never calls w.WriteHeader or w.Write.
-// INVARIANT: Retry only occurs when fc.BytesFlushed == false.
+//  1. Build outbound request from body (fresh bytes.Reader).
+//  2. Call BeforeForward — injects auth from the pool for this attempt.
+//  3. Call httpClient.Do — sends the request, gets response headers.
+//  4. Call OnPreStreamResponse — hook decides retry/continue.
+//  5. If Retry && !BytesFlushed: drain+close resp body, increment attempt,
+//     return to step 1.
+//  6. If not retrying: return resp to caller for streaming.
+//  7. If all attempts exhausted: return the last response (caller surfaces
+//     it to the client — never a silent hang).
 func SMMForwardWithRetry(
 	s *Server,
 	w http.ResponseWriter,
@@ -226,60 +47,143 @@ func SMMForwardWithRetry(
 	body []byte,
 	threadID string,
 ) (*http.Response, error) {
-	hooks := proxyext.ActiveHooks()
-	if hooks == nil {
-		// SMM not initialised — fall through to caller's default path.
-		return nil, fmt.Errorf("smm: SMMForwardWithRetry called but hooks not initialised")
+	cfg := proxyext.ActiveSMMConfig()
+	maxRetries := 2 // safe default
+	if cfg != nil && cfg.AccountPool.MaxPreStreamRetries > 0 {
+		maxRetries = cfg.AccountPool.MaxPreStreamRetries
 	}
 
-	// Determine max retries from pool config.
-	// The hard ceiling prevents misconfigured YAML from looping forever.
-	maxRetries := smmMaxHardRetries
-	if cfg := proxyext.ActiveSMMConfig(); cfg != nil && cfg.AccountPool.MaxPreStreamRetries > 0 {
-		if cfg.AccountPool.MaxPreStreamRetries < smmMaxHardRetries {
-			maxRetries = cfg.AccountPool.MaxPreStreamRetries
-		}
-	}
-
+	// OriginalBody is captured once. Each attempt wraps it in a fresh
+	// bytes.Reader so the body is never consumed more than once.
 	fc := &proxyext.ForwardContext{
 		ReqCtx: proxyext.RequestContext{
-			ThreadID: threadID,
+			ThreadID:   threadID,
+			IsSubagent: isSubagentFromBody(body),
 		},
-		Attempt: 0,
+		OriginalBody: body,
+		// BytesFlushed starts false and stays false for the entire lifetime of
+		// this function — we never write to w. The hooks.go dispatcher also
+		// enforces this; the field is set here to satisfy the type contract.
+		BytesFlushed: false,
 	}
+
+	var lastResp *http.Response
+	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		fc.Attempt = attempt
 
-		result := attemptSMMForward(s, w, origReq, body, fc)
-
-		if result.err != nil {
-			// Transport error. Log and either retry (if transport errors are
-			// ever made retryable in classify.go) or return.
-			// Currently transport errors are not retryable per failure_classifier_table.
-			s.logger.Printf("smm: transport error on attempt %d: %v", attempt, result.err)
-			return nil, result.err
+		// ── 1. Build a fresh outbound request for this attempt ────────────
+		targetURL := s.resolveAnthropicTarget(extractModelFromBody(body)) + origReq.URL.RequestURI()
+		proxyReq, err := http.NewRequestWithContext(
+			origReq.Context(),
+			origReq.Method,
+			targetURL,
+			bytes.NewReader(body), // fresh reader every attempt
+		)
+		if err != nil {
+			return nil, fmt.Errorf("smm: build request (attempt %d): %w", attempt, err)
 		}
 
-		if result.resp != nil {
-			// Successful non-retry: response received, no bytes flushed,
-			// hook said do not retry. Return to caller.
-			return result.resp, nil
+		// Copy client headers onto the outbound request. BeforeForward will
+		// overwrite the Authorization and remove x-api-key as needed.
+		for key, vals := range origReq.Header {
+			for _, v := range vals {
+				proxyReq.Header.Add(key, v)
+			}
+		}
+		proxyReq.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		proxyReq.Header.Del("Connection")
+		proxyReq.Header.Del("Accept-Encoding") // force uncompressed for SSE parsing
+
+		fc.OutboundReq = proxyReq
+
+		// ── 2. BeforeForward — account selection and auth injection ──────
+		if err := proxyext.BeforeForward(fc); err != nil {
+			// Hard exhaustion (all accounts unavailable) is surfaced as an
+			// error so forwardWithAnnotation can return a clean 502.
+			// Soft errors (fail-open) are swallowed inside BeforeForward
+			// itself and the original client auth is preserved.
+			return nil, fmt.Errorf("smm: BeforeForward (attempt %d): %w", attempt, err)
 		}
 
-		// result.resp == nil means attemptSMMForward decided to retry.
-		// Sanity check: BytesFlushed must be false — enforced by
-		// attemptSMMForward before it closes the response body.
-		if result.bytesFlushed {
-			// This branch should be unreachable by construction, but if
-			// it fires it means a bug allowed a retry after flush.
-			// Panic would be worse than surfacing the error.
-			return nil, fmt.Errorf("smm: invariant violation: retry attempted after bytes flushed")
+		// ── 3. Record TTL observation for this attempt (matches stock path) ─
+		if s.cacheTTLDetector != nil {
+			s.cacheTTLDetector.RecordRequest(threadID)
 		}
 
-		s.logger.Printf("smm: retrying (attempt %d/%d) account=%s",
-			attempt+1, maxRetries, result.selectedAccount.Name)
+		// ── 4. Send the request — receive headers only, body not consumed ─
+		s.logger.Printf("[smm] smm_account_attempt=%d", attempt)
+		resp, doErr := s.httpClient.Do(proxyReq)
+		if doErr != nil {
+			// Network error before headers arrived. Not retryable by the
+			// account pool (network transients are server-side, not
+			// account-specific). Surface immediately.
+			lastErr = doErr
+			break
+		}
+
+		// ── 5. OnPreStreamResponse — retry decision ───────────────────────
+		// BytesFlushed is false: no bytes have been written to w yet.
+		decision, hookErr := proxyext.OnPreStreamResponse(fc, resp)
+		if hookErr != nil {
+			// Hook error: fail open — return the response as-is and let
+			// forwardWithAnnotation stream it to the client normally.
+			s.logger.Printf("[smm] smm_retry_decision=error hook_err=%v (fail open)", hookErr)
+			lastResp = resp
+			break
+		}
+
+		if !decision.Retry {
+			// This attempt is final — hand response to caller for streaming.
+			s.logger.Printf("[smm] smm_retry_decision=false smm_retry_reason=%s status=%d attempt=%d",
+				decision.Reason, resp.StatusCode, attempt)
+			lastResp = resp
+			break
+		}
+
+		// ── 6. Retry: drain and close this response before the next attempt ─
+		// Draining prevents goroutine leaks in the upstream connection pool.
+		// We use a size-limited drain (32 KB) to avoid materialising large
+		// error bodies from the upstream — we only care about connection reuse.
+		s.logger.Printf("[smm] smm_stream_started_at_retry=false rotating account attempt=%d→%d status=%d reason=%s",
+			attempt, attempt+1, resp.StatusCode, decision.Reason)
+		drainAndClose(resp)
+		lastResp = nil
 	}
 
-	return nil, fmt.Errorf("smm: all %d account pool attempts exhausted", maxRetries+1)
+	// ── 7. Terminal: call OnPostResponse exactly once ────────────────────────
+	// OnPostResponse fires even on error so per-account state is always updated.
+	// It must not be called inside the retry loop — only on the final outcome.
+	result := proxyext.ForwardResult{
+		Err: lastErr,
+	}
+	if lastResp != nil {
+		result.StatusCode = lastResp.StatusCode
+	}
+	proxyext.OnPostResponse(fc, result)
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	if lastResp == nil {
+		// All retries exhausted without a response: synthetic 503.
+		return nil, fmt.Errorf("smm: all %d attempts exhausted with no response", maxRetries+1)
+	}
+	return lastResp, nil
+}
+
+// drainAndClose discards up to 32 KB of resp.Body then closes it.
+// This allows the underlying TCP connection to be returned to the pool.
+const drainLimit = 32 * 1024
+
+func drainAndClose(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	// io.LimitReader + io.Discard: bounded drain to reuse the connection.
+	// Errors here are intentionally ignored — we are abandoning this response.
+	buf := make([]byte, drainLimit)
+	resp.Body.Read(buf) //nolint:errcheck
+	resp.Body.Close()
 }

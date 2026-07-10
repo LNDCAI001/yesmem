@@ -20,6 +20,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -125,6 +126,7 @@ func SMMForwardWithRetry(
 			// Close the body before the next attempt to avoid leaking
 			// connections back to the upstream transport pool.
 			resp.Body.Close()
+			lastErr = fmt.Errorf("smm: retryable response on attempt %d/%d (status %d)", attempt+1, maxAttempts, resp.StatusCode)
 			continue
 		}
 
@@ -179,17 +181,19 @@ func SMMForwardWithRetry(
 		_, _ = io.Copy(w, lastResp.Body)
 		lastResp.Body.Close()
 		proxyext.OnPostResponse(fc, proxyext.ForwardResult{StatusCode: lastResp.StatusCode})
-		return nil
+		return fmt.Errorf("smm: all %d account attempts exhausted, forwarded last response (status %d)", maxAttempts, lastResp.StatusCode)
 	}
 
 	// Pure transport error with no HTTP response at all.
 	// OnPostResponse was already called in the transport-error branch above.
 	if lastErr != nil {
 		http.Error(w, "upstream error: "+lastErr.Error(), http.StatusBadGateway)
-		return lastErr
+		return fmt.Errorf("smm: all %d account attempts exhausted (last: %w)", maxAttempts, lastErr)
 	}
 
-	return nil
+	// Should be unreachable: maxAttempts >= 1 and every attempt either returns,
+	// breaks with lastErr set, or continues with lastResp set.
+	return fmt.Errorf("smm: all %d account attempts exhausted with no response and no error (logic error)", maxAttempts)
 }
 
 // cloneForAttempt creates a fresh outbound request with origBody as the body.

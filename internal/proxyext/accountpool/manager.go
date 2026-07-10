@@ -48,10 +48,9 @@ func NewPool(cfg Config, logger *log.Logger) (*Pool, error) {
 	if logger == nil {
 		logger = log.Default()
 	}
+	// CooldownSeconds=0 means no cooldown — rotate immediately.
+	// A positive value sets the cooldown duration after a 429.
 	cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
-	if cooldown <= 0 {
-		cooldown = 300 * time.Second
-	}
 	return &Pool{
 		cfg:      cfg,
 		sel:      NewRoundRobinSelector(cfg.Accounts, cooldown),

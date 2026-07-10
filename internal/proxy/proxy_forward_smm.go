@@ -1,32 +1,5 @@
 // Package proxy — SMM retry-loop wiring for proxy_forward.go.
 //
-// HOW TO INTEGRATE INTO proxy_forward.go
-// ========================================
-// This file lives in internal/proxy/ so it can be a peer of proxy_forward.go
-// and share its unexported types. It defines SMMForwardWithRetry, the retry
-// loop that implements Feature A (account rotation).
-//
-// You need to add TWO things to proxy_forward.go:
-//
-// 1. Near the top of the existing forward function, after the request is built
-//    but before httpClient.Do, add:
-//
-//      if proxyext.IsEnabled() {
-//          err = SMMForwardWithRetry(ctx, threadID, isSubagent, w, origBody, outReq)
-//          if err != nil {
-//              http.Error(w, err.Error(), http.StatusBadGateway)
-//          }
-//          return
-//      }
-//
-// 2. Add a one-time body drain before building outReq:
-//
-//      origBody, err := io.ReadAll(r.Body)
-//      if err != nil { http.Error(w, "read body", 500); return }
-//
-//    yesmem likely already reads the body — verify this before adding the
-//    drain. If it does, pass the already-read bytes here instead.
-//
 // INVARIANTS ENFORCED BY THIS FILE
 // ==================================
 //   - BytesFlushed is set to true before the first w.Write. OnPreStreamResponse
@@ -37,10 +10,11 @@
 //   - Thread/session IDs in ForwardContext are never mutated across retries.
 //   - The outbound request body is re-built from origBody on every attempt;
 //     the original r.Body (already drained) is never re-read.
-//   - The http.Client used here has no absolute Timeout — it relies on the
-//     request context deadline (from the parent request) for cancellation.
-//     This is correct for SSE streaming responses which can legitimately run
-//     for minutes. A fixed timeout would kill long Claude responses mid-stream.
+//   - The http.Client used here is s.httpClient (the server-wide shared client)
+//     so TLS config, connection pooling, and keep-alive settings are identical
+//     to the stock forward path. No absolute Timeout is set — cancellation is
+//     handled via the request context deadline from the parent handler, which
+//     is correct for SSE responses that can legitimately run for minutes.
 package proxy
 
 import (
@@ -53,27 +27,19 @@ import (
 	"github.com/LNDCAI001/yesmem/internal/proxyext"
 )
 
-// smmHTTPClient is the *http.Client used by SMMForwardWithRetry.
-// Timeout is deliberately 0 (unlimited) — SSE streaming responses from
-// Claude can run for many minutes. Cancellation is handled via the request
-// context, which carries the client's deadline from the parent handler.
-//
-// TODO: replace with the actual package-level transport from proxy.go so that
-// connection pooling, TLS config, and keep-alive settings are shared.
-var smmHTTPClient = &http.Client{Timeout: 0}
-
 // SMMForwardWithRetry executes an upstream request with account-pool-aware
 // pre-stream retry. It is called instead of the standard single-attempt path
-// when proxyext.IsEnabled() is true.
+// when proxyext.IsActive() is true and the account pool is enabled.
 //
 // Parameters:
-//   - ctx:        request context (should carry the client deadline)
+//   - ctx:        request context (carries the client deadline)
 //   - threadID:   yesmem thread/session identifier, unchanged across retries
-//   - isSubagent: from the parsed request
+//   - isSubagent: from the parsed request body
 //   - w:          the client ResponseWriter — nothing is written until success
 //   - origBody:   the request body, drained exactly once by the caller
 //   - outReq:     the outbound *http.Request already built by proxy_forward.go,
 //                 with all headers except Authorization (which BeforeForward injects)
+//   - s:          the proxy Server; used for s.httpClient and s.cacheTTLDetector
 func SMMForwardWithRetry(
 	ctx context.Context,
 	threadID string,
@@ -81,6 +47,7 @@ func SMMForwardWithRetry(
 	w http.ResponseWriter,
 	origBody []byte,
 	outReq *http.Request,
+	s *Server,
 ) error {
 	cfg := proxyext.ActiveSMMConfig()
 	if cfg == nil {
@@ -113,29 +80,34 @@ func SMMForwardWithRetry(
 		// cloneForAttempt deep-copies headers so BeforeForward can freely
 		// mutate the Authorization header without affecting subsequent clones.
 		// ctx is threaded through so the cloned request respects the client
-		// deadline — previously context.Background() was used which lost
-		// cancellation on the cloned request.
+		// deadline.
 		attemptReq, cloneErr := cloneForAttempt(ctx, outReq, origBody)
 		if cloneErr != nil {
 			return cloneErr
 		}
 		fc.OutboundReq = attemptReq
 
-		// Let the hook select an account and inject its Authorization header.
+		// Hook: select an account and inject its Authorization header.
 		if hookErr := proxyext.BeforeForward(fc); hookErr != nil {
 			// All accounts exhausted — surface as 503.
 			http.Error(w, hookErr.Error(), http.StatusServiceUnavailable)
 			return hookErr
 		}
 
-		// Send the request upstream. fc.OutboundReq now carries the injected
-		// auth header and a fresh body reader; it is safe to pass directly.
-		resp, doErr := smmHTTPClient.Do(fc.OutboundReq)
+		// Mirror the stock path: record the request in the TTL detector before
+		// each upstream send so per-account TTL inference is not skipped.
+		if s.cacheTTLDetector != nil {
+			s.cacheTTLDetector.RecordRequest(threadID)
+		}
+
+		// Send the request upstream via the shared server transport.
+		// fc.OutboundReq carries the injected auth header and a fresh body reader.
+		resp, doErr := s.httpClient.Do(fc.OutboundReq)
 		if doErr != nil {
 			lastErr = doErr
 			// Transport error — do NOT call OnPreStreamResponse with a nil resp
-			// (extension.go would panic on resp.StatusCode). Instead record the
-			// failure directly via OnPostResponse so account state is updated.
+			// (extension.go would panic on resp.StatusCode). Record the failure
+			// directly via OnPostResponse so account state is updated.
 			proxyext.OnPostResponse(fc, proxyext.ForwardResult{Err: doErr})
 			break
 		}
@@ -156,19 +128,38 @@ func SMMForwardWithRetry(
 			continue
 		}
 
-		// No retry — stream the response to the client.
-		w.WriteHeader(resp.StatusCode)
+		// ── Winning attempt ───────────────────────────────────────────────────
+		//
+		// Persist the winning Authorization header so downstream logic in
+		// forwardWithAnnotation (keepalive reset, forked agents) uses the
+		// selected subscription account credential rather than the inbound
+		// client credential.
+		if auth := fc.OutboundReq.Header.Get("Authorization"); auth != "" && threadID != "" {
+			smmWinningAuth.Store(threadID, auth)
+		}
+
+		// Forward upstream response headers to the client before WriteHeader so
+		// rate-limit headers, Content-Type, and other upstream metadata are
+		// visible to the downstream client and any response-inspecting middleware.
+		for key, vals := range resp.Header {
+			for _, v := range vals {
+				w.Header().Add(key, v)
+			}
+		}
+
+		// BytesFlushed must be set before WriteHeader — the dispatcher uses it
+		// as a categorical gate to block any post-WriteHeader retry attempt.
 		fc.BytesFlushed = true
+		w.WriteHeader(resp.StatusCode)
 
 		_, copyErr := io.Copy(w, resp.Body)
 		resp.Body.Close()
 
 		// Record outcome for observability and per-account state.
-		result := proxyext.ForwardResult{
+		proxyext.OnPostResponse(fc, proxyext.ForwardResult{
 			StatusCode: resp.StatusCode,
 			Err:        copyErr,
-		}
-		proxyext.OnPostResponse(fc, result)
+		})
 
 		return copyErr
 	}
@@ -178,8 +169,13 @@ func SMMForwardWithRetry(
 	// Forward the last response if we received one, so the client gets a real
 	// HTTP status rather than a silent hang or an empty connection reset.
 	if lastResp != nil {
-		w.WriteHeader(lastResp.StatusCode)
+		for key, vals := range lastResp.Header {
+			for _, v := range vals {
+				w.Header().Add(key, v)
+			}
+		}
 		fc.BytesFlushed = true
+		w.WriteHeader(lastResp.StatusCode)
 		_, _ = io.Copy(w, lastResp.Body)
 		lastResp.Body.Close()
 		proxyext.OnPostResponse(fc, proxyext.ForwardResult{StatusCode: lastResp.StatusCode})

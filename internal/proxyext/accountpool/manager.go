@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -29,12 +28,15 @@ type Pool struct {
 	logger   *log.Logger
 }
 
-// errExhausted is the sentinel error returned when all accounts are unavailable.
+// errExhausted is the typed sentinel returned when all accounts are unavailable.
+// IsExhausted uses errors.Is against this value — do not use string matching.
 var errExhausted = errors.New("accountpool: all accounts are unavailable")
 
 // IsExhausted reports whether err signals that all pool accounts are exhausted.
+// Uses errors.Is on the typed sentinel to avoid false positives from unrelated
+// error messages that happen to contain the same substring.
 func IsExhausted(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "all accounts are unavailable")
+	return errors.Is(err, errExhausted)
 }
 
 // NewPool creates an active account pool. Returns (nil, nil) when disabled or
@@ -59,15 +61,16 @@ func NewPool(cfg Config, logger *log.Logger) (*Pool, error) {
 }
 
 // SelectAndGetToken selects the next available account and fetches its token.
-// Returns (AccountRef{}, TokenResult{}, err) on any failure.
-// If all accounts are unavailable the error satisfies IsExhausted.
+// Returns (AccountRef{}, TokenResult{}, errExhausted) when all accounts are
+// unavailable. IsExhausted(err) reports true for this case.
 func (p *Pool) SelectAndGetToken(ctx context.Context, meta RequestMeta) (AccountRef, TokenResult, error) {
 	if p == nil {
 		return AccountRef{}, TokenResult{}, nil
 	}
 	acc, err := p.sel.Select(ctx, meta)
 	if err != nil {
-		return AccountRef{}, TokenResult{}, fmt.Errorf("accountpool: all accounts are unavailable: %w", err)
+		// Wrap the typed sentinel so callers can use errors.Is.
+		return AccountRef{}, TokenResult{}, fmt.Errorf("%w: %w", errExhausted, err)
 	}
 	tok, err := p.provider.GetAccessToken(ctx, acc)
 	if err != nil {

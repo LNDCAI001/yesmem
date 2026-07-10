@@ -37,6 +37,10 @@
 //   - Thread/session IDs in ForwardContext are never mutated across retries.
 //   - The outbound request body is re-built from origBody on every attempt;
 //     the original r.Body (already drained) is never re-read.
+//   - The http.Client used here has no absolute Timeout — it relies on the
+//     request context deadline (from the parent request) for cancellation.
+//     This is correct for SSE streaming responses which can legitimately run
+//     for minutes. A fixed timeout would kill long Claude responses mid-stream.
 package proxy
 
 import (
@@ -45,15 +49,18 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/LNDCAI001/yesmem/internal/proxyext"
 )
 
 // smmHTTPClient is the *http.Client used by SMMForwardWithRetry.
-// In production proxy_forward.go uses a package-level client; wire it here.
-// TODO: replace with the actual package-level client variable from proxy.go.
-var smmHTTPClient = &http.Client{Timeout: 120 * time.Second}
+// Timeout is deliberately 0 (unlimited) — SSE streaming responses from
+// Claude can run for many minutes. Cancellation is handled via the request
+// context, which carries the client's deadline from the parent handler.
+//
+// TODO: replace with the actual package-level transport from proxy.go so that
+// connection pooling, TLS config, and keep-alive settings are shared.
+var smmHTTPClient = &http.Client{Timeout: 0}
 
 // SMMForwardWithRetry executes an upstream request with account-pool-aware
 // pre-stream retry. It is called instead of the standard single-attempt path
@@ -105,7 +112,10 @@ func SMMForwardWithRetry(
 		// Build a fresh clone of outReq with origBody as the body.
 		// cloneForAttempt deep-copies headers so BeforeForward can freely
 		// mutate the Authorization header without affecting subsequent clones.
-		attemptReq, cloneErr := cloneForAttempt(outReq, origBody)
+		// ctx is threaded through so the cloned request respects the client
+		// deadline — previously context.Background() was used which lost
+		// cancellation on the cloned request.
+		attemptReq, cloneErr := cloneForAttempt(ctx, outReq, origBody)
 		if cloneErr != nil {
 			return cloneErr
 		}
@@ -123,10 +133,10 @@ func SMMForwardWithRetry(
 		resp, doErr := smmHTTPClient.Do(fc.OutboundReq)
 		if doErr != nil {
 			lastErr = doErr
-			// Transport error — call OnPreStreamResponse with nil resp so the
-			// hook can record the failure (classify returns non-retryable for
-			// network timeouts; the loop will break after this).
-			proxyext.OnPreStreamResponse(fc, nil) //nolint:errcheck
+			// Transport error — do NOT call OnPreStreamResponse with a nil resp
+			// (extension.go would panic on resp.StatusCode). Instead record the
+			// failure directly via OnPostResponse so account state is updated.
+			proxyext.OnPostResponse(fc, proxyext.ForwardResult{Err: doErr})
 			break
 		}
 		lastResp = resp
@@ -177,8 +187,8 @@ func SMMForwardWithRetry(
 	}
 
 	// Pure transport error with no HTTP response at all.
+	// OnPostResponse was already called in the transport-error branch above.
 	if lastErr != nil {
-		proxyext.OnPostResponse(fc, proxyext.ForwardResult{Err: lastErr})
 		http.Error(w, "upstream error: "+lastErr.Error(), http.StatusBadGateway)
 		return lastErr
 	}
@@ -187,10 +197,11 @@ func SMMForwardWithRetry(
 }
 
 // cloneForAttempt creates a fresh outbound request with origBody as the body.
+// ctx is applied to the clone so the request respects the client deadline.
 // Headers are deep-copied so BeforeForward can mutate the Authorization header
 // freely without affecting the base request or subsequent clones.
-func cloneForAttempt(base *http.Request, origBody []byte) (*http.Request, error) {
-	cloned := base.Clone(context.Background())
+func cloneForAttempt(ctx context.Context, base *http.Request, origBody []byte) (*http.Request, error) {
+	cloned := base.Clone(ctx)
 	cloned.Body = io.NopCloser(bytes.NewReader(origBody))
 	cloned.ContentLength = int64(len(origBody))
 	cloned.GetBody = func() (io.ReadCloser, error) {

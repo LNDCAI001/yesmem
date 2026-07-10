@@ -2,8 +2,8 @@
 // It is intentionally isolated from internal/proxy to minimise upstream merge
 // surface. The only files that import this package are:
 //
-//	internal/proxy/proxy_forward.go  — calls BeforeForward / OnPreStreamResponse
-//	internal/proxy/proxy.go          — calls Init at startup
+//	internal/proxy/proxy_forward_smm.go — calls BeforeForward / OnPreStreamResponse
+//	internal/proxy/proxy.go             — calls Init at startup
 //
 package proxyext
 
@@ -129,9 +129,14 @@ func (h *smmHooks) BeforeForward(fc *ForwardContext) error {
 
 	// Inject auth. tok.Token is the Bearer string from the OAuth store.
 	fc.OutboundReq.Header.Set("Authorization", "Bearer "+tok.Token)
-	// Claude Code sometimes sends both Authorization and x-api-key. Remove
-	// the API-key header so only the pool-injected token reaches Anthropic.
-	fc.OutboundReq.Header.Del("x-api-key")
+
+	// Claude Code sends both Authorization and x-api-key in some requests.
+	// Remove the API-key header so only the pool-injected token reaches Anthropic.
+	// Go's http.Header uses canonical form (textproto.CanonicalMIMEHeaderKey);
+	// Del("x-api-key") would silently do nothing because the canonical form is
+	// "X-Api-Key". We delete both forms to be safe:
+	fc.OutboundReq.Header.Del("X-Api-Key")
+	delete(fc.OutboundReq.Header, "x-api-key") // raw key, pre-canonicalization
 
 	// Store the full ref in ForwardContext so OnPreStreamResponse can retrieve
 	// it without reconstructing from a name string.
@@ -148,15 +153,27 @@ func (h *smmHooks) BeforeForward(fc *ForwardContext) error {
 // categorical gate: if true, no retry is possible and the decision is always
 // Retry:false. This check is also enforced by the hooks.go dispatcher, but we
 // check it here as defence-in-depth.
+//
+// resp may be nil when called after a transport error. In that case we cannot
+// make a retry decision (no status code) so we return Retry:false. The caller
+// (proxy_forward_smm.go) must NOT call OnPreStreamResponse with a nil resp —
+// it should call OnPostResponse with the error instead. This guard exists as
+// defence-in-depth against incorrect callers.
 func (h *smmHooks) OnPreStreamResponse(fc *ForwardContext, resp *http.Response) (RetryDecision, error) {
 	if h.pool == nil {
 		return RetryDecision{}, nil
 	}
 
 	// Hard rule: never retry after bytes have been flushed to the client.
-	// The dispatcher also enforces this, but we check here as defence-in-depth.
 	if fc.BytesFlushed {
 		return RetryDecision{Retry: false, Reason: "bytes_already_flushed"}, nil
+	}
+
+	// Guard nil response — transport error path. The caller should have used
+	// OnPostResponse instead, but we handle this defensively.
+	if resp == nil {
+		h.logger.Printf("[smm] smm_retry_decision=false smm_retry_reason=nil_response")
+		return RetryDecision{Retry: false, Reason: "nil_response"}, nil
 	}
 
 	acc, ok := fc.SelectedAccount.(accountpool.AccountRef)
@@ -182,13 +199,12 @@ func (h *smmHooks) OnPostResponse(fc *ForwardContext, result ForwardResult) {
 	if !ok {
 		return
 	}
-	if result.Err == nil && result.StatusCode < 400 {
+	if result.Err == nil && result.StatusCode >= 200 && result.StatusCode < 300 {
 		h.pool.RecordSuccess(acc)
 	}
-	// Non-2xx terminal outcomes are already recorded inside ShouldRetry
-	// (which marks the account before returning). OnPostResponse only needs
-	// to record clean successes that were never passed through ShouldRetry
-	// (e.g. non-streaming 200 responses).
+	// Non-2xx terminal outcomes and transport errors are already recorded
+	// inside ShouldRetry / MarkResult. OnPostResponse only records clean
+	// 2xx successes that bypassed ShouldRetry (e.g. 200 streaming responses).
 }
 
 // TransformStaticPayload is a no-op in v1. staticplan is present in the

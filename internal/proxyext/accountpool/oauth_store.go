@@ -19,11 +19,40 @@ type tokenCacheEntry struct {
 	credsPath string
 }
 
-const tokenCacheTTL = 30 * time.Second
+const (
+	tokenCacheTTL        = 30 * time.Second
+	tokenCacheEvictEvery = 60 * time.Second
+)
 
 // tokenCache is the process-level cache keyed on the absolute credential dir path.
 // sync.Map is chosen because reads vastly outnumber writes in normal operation.
-var tokenCache sync.Map // map[string]*tokenCacheEntry
+var (
+	tokenCache      sync.Map  // map[string]*tokenCacheEntry
+	evictOnce       sync.Once // ensures the eviction goroutine is started exactly once
+)
+
+// startEviction starts a background goroutine that purges stale entries from
+// tokenCache every tokenCacheEvictEvery. Called lazily on first use so that
+// packages importing accountpool in tests do not start background goroutines
+// unconditionally.
+func startEviction() {
+	evictOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(tokenCacheEvictEvery)
+			defer ticker.Stop()
+			for range ticker.C {
+				now := time.Now()
+				tokenCache.Range(func(k, v interface{}) bool {
+					entry := v.(*tokenCacheEntry)
+					if now.Sub(entry.readAt) > tokenCacheTTL {
+						tokenCache.Delete(k)
+					}
+					return true
+				})
+			}
+		}()
+	})
+}
 
 // InvalidateToken removes the cached token for the given credentialDir.
 // Call this when a 401 is received for an account so the next attempt
@@ -39,6 +68,8 @@ func InvalidateToken(credentialDir string) {
 // LocalOAuthStore reads Claude credentials from the local filesystem.
 // Results are cached in memory for tokenCacheTTL to avoid redundant disk reads
 // on every request. The cache is invalidated on 401 via InvalidateToken.
+// A background eviction goroutine (started once per process) removes stale
+// entries so the sync.Map does not grow unboundedly in long-lived processes.
 type LocalOAuthStore struct{}
 
 // claudeCredentials mirrors the subset of fields we need from .credentials.json.
@@ -53,6 +84,9 @@ type claudeCredentials struct {
 // token without a disk read. On cache miss or invalidation, reads the
 // credential file, validates the token, and updates the cache.
 func (s *LocalOAuthStore) GetAccessToken(_ context.Context, account AccountRef) (TokenResult, error) {
+	// Ensure the background eviction goroutine is running.
+	startEviction()
+
 	dir := account.CredentialDir
 	if dir == "" {
 		return TokenResult{}, fmt.Errorf("accountpool: empty credential_dir for account %q", account.Name)

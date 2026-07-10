@@ -26,6 +26,7 @@ func newSelector(names ...string) *accountpool.RoundRobinSelector {
 // ── Classify ─────────────────────────────────────────────────────────────────
 
 func TestClassify_streamStarted(t *testing.T) {
+	t.Parallel()
 	for _, code := range []int{200, 429, 401, 403} {
 		fc := accountpool.Classify(&http.Response{StatusCode: code}, true)
 		if fc != accountpool.FailureStreamMidway {
@@ -35,6 +36,7 @@ func TestClassify_streamStarted(t *testing.T) {
 }
 
 func TestClassify_nilResp(t *testing.T) {
+	t.Parallel()
 	fc := accountpool.Classify(nil, false)
 	if fc != accountpool.FailureNetworkTimeout {
 		t.Errorf("expected FailureNetworkTimeout, got %v", fc)
@@ -42,6 +44,7 @@ func TestClassify_nilResp(t *testing.T) {
 }
 
 func TestClassify_statuses(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		code int
 		want accountpool.FailureClass
@@ -55,14 +58,19 @@ func TestClassify_statuses(t *testing.T) {
 		{418, accountpool.FailureNone}, // unknown status → none
 	}
 	for _, tc := range cases {
-		got := accountpool.Classify(&http.Response{StatusCode: tc.code}, false)
-		if got != tc.want {
-			t.Errorf("code=%d: got %v, want %v", tc.code, got, tc.want)
-		}
+		tc := tc
+		t.Run(fmt.Sprintf("%d", tc.code), func(t *testing.T) {
+			t.Parallel()
+			got := accountpool.Classify(&http.Response{StatusCode: tc.code}, false)
+			if got != tc.want {
+				t.Errorf("code=%d: got %v, want %v", tc.code, got, tc.want)
+			}
+		})
 	}
 }
 
 func TestFailureClass_IsRetryable(t *testing.T) {
+	t.Parallel()
 	retryable := []accountpool.FailureClass{accountpool.FailureQuotaLimited, accountpool.FailureTokenInvalid}
 	notRetryable := []accountpool.FailureClass{
 		accountpool.FailureNone, accountpool.FailureEntitlement,
@@ -84,6 +92,7 @@ func TestFailureClass_IsRetryable(t *testing.T) {
 // ── StateStore ───────────────────────────────────────────────────────────────
 
 func TestStateStore_roundTrip(t *testing.T) {
+	t.Parallel()
 	accs := makeAccounts("a", "b")
 	store := accountpool.NewStateStore(accs)
 
@@ -103,6 +112,7 @@ func TestStateStore_roundTrip(t *testing.T) {
 }
 
 func TestStateStore_hardFail(t *testing.T) {
+	t.Parallel()
 	accs := makeAccounts("x")
 	store := accountpool.NewStateStore(accs)
 
@@ -124,6 +134,7 @@ func TestStateStore_hardFail(t *testing.T) {
 // once. The previous code called RecordQuotaHit + RecordAuthError which
 // incremented it twice, causing premature hard-fail on the second 403.
 func TestStateStore_entitlement403_noDoubleIncrement(t *testing.T) {
+	t.Parallel()
 	accs := makeAccounts("ent")
 	store := accountpool.NewStateStore(accs)
 
@@ -150,6 +161,7 @@ func TestStateStore_entitlement403_noDoubleIncrement(t *testing.T) {
 // ── RoundRobinSelector ───────────────────────────────────────────────────────
 
 func TestSelector_roundRobin(t *testing.T) {
+	t.Parallel()
 	sel := newSelector("a", "b", "c")
 	ctx := context.Background()
 	meta := accountpool.RequestMeta{}
@@ -175,6 +187,7 @@ func TestSelector_roundRobin(t *testing.T) {
 }
 
 func TestSelector_cooldownSkip(t *testing.T) {
+	t.Parallel()
 	sel := newSelector("a", "b")
 	ctx := context.Background()
 	meta := accountpool.RequestMeta{}
@@ -196,6 +209,7 @@ func TestSelector_cooldownSkip(t *testing.T) {
 }
 
 func TestSelector_allCoolingReturnsError(t *testing.T) {
+	t.Parallel()
 	sel := newSelector("a")
 	ctx := context.Background()
 	meta := accountpool.RequestMeta{}
@@ -212,6 +226,7 @@ func TestSelector_allCoolingReturnsError(t *testing.T) {
 }
 
 func TestSelector_postStreamIsSuccess(t *testing.T) {
+	t.Parallel()
 	sel := newSelector("a")
 
 	// FailureStreamMidway should record as success from pool perspective.
@@ -233,6 +248,7 @@ func TestSelector_postStreamIsSuccess(t *testing.T) {
 // ── Pool ─────────────────────────────────────────────────────────────────────
 
 func TestPool_nilIsNoop(t *testing.T) {
+	t.Parallel()
 	var p *accountpool.Pool
 	_, _, err := p.SelectAndGetToken(context.Background(), accountpool.RequestMeta{})
 	if err != nil {
@@ -248,6 +264,7 @@ func TestPool_nilIsNoop(t *testing.T) {
 }
 
 func TestPool_disabledReturnsNil(t *testing.T) {
+	t.Parallel()
 	p, err := accountpool.NewPool(accountpool.Config{Enabled: false}, nil)
 	if err != nil {
 		t.Fatalf("NewPool disabled: %v", err)
@@ -258,24 +275,13 @@ func TestPool_disabledReturnsNil(t *testing.T) {
 }
 
 func TestPool_shouldRetry_maxRetries(t *testing.T) {
-	sel := accountpool.NewRoundRobinSelector(makeAccounts("a", "b"), 300*time.Second)
-	_ = sel
-	// Use a real Pool via config — but we can't inject a fake provider easily
-	// without an interface. Test max-retry logic via ShouldRetry directly on a
-	// Pool built with a real (but inaccessible) credential dir so it panics on
-	// SelectAndGetToken. Instead, test the MaxPreStreamRetries boundary via the
-	// state: attempt >= max → false.
-	//
-	// The Pool.ShouldRetry implementation returns (false, "max_retries_exceeded")
-	// when attempt >= cfg.MaxPreStreamRetries. Verify with attempt=2, max=2.
+	t.Parallel()
 	p, _ := accountpool.NewPool(accountpool.Config{
 		Enabled:             true,
 		MaxPreStreamRetries: 2,
 		CooldownSeconds:     300,
 		Accounts:            makeAccounts("a"),
 	}, nil)
-	// p is nil if NewPool fails to build (credential dir doesn't exist is OK
-	// at construction time — it only fails at token read time).
 	if p == nil {
 		t.Skip("pool not built (expected in unit test environment without real creds)")
 	}
@@ -285,5 +291,34 @@ func TestPool_shouldRetry_maxRetries(t *testing.T) {
 	}
 	if reason != "max_retries_exceeded" {
 		t.Errorf("expected reason=max_retries_exceeded, got %q", reason)
+	}
+}
+
+// ── IsExhausted sentinel ──────────────────────────────────────────────────────
+// Verifies that IsExhausted uses errors.Is on the typed sentinel, not
+// strings.Contains — so it does not match unrelated errors that happen to
+// contain the same phrase.
+func TestIsExhausted_typedSentinel(t *testing.T) {
+	t.Parallel()
+
+	// A pool with one account in hard-fail should return the typed sentinel.
+	sel := accountpool.NewRoundRobinSelector(makeAccounts("a"), 300*time.Second)
+	sel.MarkResult(accountpool.AccountResult{
+		Account:           accountpool.AccountRef{Name: "a"},
+		ClassifiedFailure: accountpool.FailureQuotaLimited,
+	})
+	// All accounts cooling — Select returns an error. Pool wraps it with
+	// errExhausted via fmt.Errorf("%w: %w", errExhausted, err).
+	// We cannot call Pool.SelectAndGetToken without a real provider, so test
+	// IsExhausted directly with a fabricated wrapped error.
+	import_err := fmt.Errorf("%w: some inner error", accountpool.ErrExhaustedSentinel())
+	if !accountpool.IsExhausted(import_err) {
+		t.Error("IsExhausted should return true for a wrapped errExhausted")
+	}
+
+	// An unrelated error that contains the substring must not match.
+	unrelated := fmt.Errorf("all accounts are unavailable (from some other system)")
+	if accountpool.IsExhausted(unrelated) {
+		t.Error("IsExhausted must not match unrelated errors by substring")
 	}
 }

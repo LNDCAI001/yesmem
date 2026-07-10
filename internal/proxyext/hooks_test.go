@@ -8,12 +8,14 @@ import (
 )
 
 func TestDefaultHooks_compile(t *testing.T) {
+	t.Parallel()
 	// Verifies that noopHooks compiles against the Hooks interface.
 	// This test fails to compile if noop.go has wrong method signatures.
 	var _ proxyext.Hooks = proxyext.DefaultHooks()
 }
 
 func TestDefaultHooks_noop(t *testing.T) {
+	t.Parallel()
 	h := proxyext.DefaultHooks()
 	fc := &proxyext.ForwardContext{}
 
@@ -36,8 +38,10 @@ func TestDefaultHooks_noop(t *testing.T) {
 }
 
 func TestDispatcher_bytesFlushed_gate(t *testing.T) {
+	t.Parallel()
 	// Even if a real implementation were installed, BytesFlushed=true must
-	// produce Retry:false from the dispatcher.
+	// produce Retry:false from the dispatcher. This test runs without Init,
+	// exercising the dispatcher's own short-circuit before the nil check.
 	fc := &proxyext.ForwardContext{BytesFlushed: true}
 	dec, err := proxyext.OnPreStreamResponse(fc, &http.Response{StatusCode: 429})
 	if err != nil {
@@ -52,6 +56,7 @@ func TestDispatcher_bytesFlushed_gate(t *testing.T) {
 }
 
 func TestInit_and_IsEnabled(t *testing.T) {
+	// NOT t.Parallel() — mutates the package-level singleton.
 	t.Cleanup(proxyext.ResetHooksForTest)
 
 	if proxyext.IsEnabled() {
@@ -67,6 +72,7 @@ func TestInit_and_IsEnabled(t *testing.T) {
 }
 
 func TestInit_disabledConfig(t *testing.T) {
+	// NOT t.Parallel() — mutates the package-level singleton.
 	t.Cleanup(proxyext.ResetHooksForTest)
 
 	cfg := &proxyext.SMMConfig{Enabled: false}

@@ -1,6 +1,35 @@
 # SMM Extension — Branch Status
 
 **Branch:** `feature/smm-proxyext-v1`  
+**As of:** 2026-07-11 (Session 4 — all risk items closed)  
+
+---
+
+## Session 3 Risk Register — ALL CLOSED
+
+All RED items from the Session 3 risk register have been verified by live file read:
+
+| Risk Item | Status |
+|-----------|--------|
+| A. SMMForwardWithRetry function signature — compiler error fixed | CLOSED |
+| B. smmCfg field missing from Server struct — compiler error fixed | CLOSED |
+| C. smmWinningAuth sync.Map undeclared — package-level var added | CLOSED |
+| D. Test hook call signatures mismatched real interface — fixed in proxyext_test.go | CLOSED |
+| E. makeAccounts redeclared across accountpool test files — fixed | CLOSED |
+| F. TestIsExhausted_typedSentinel referenced nonexistent ErrExhaustedSentinel() — fixed | CLOSED |
+| G. oauth_store.go parsed wrong credential JSON shape — fixed to use claudeAiOauth.accessToken | CLOSED |
+| H. Exhausted-after-loop return path returned nil/lastErr ambiguous — now returns descriptive fmt.Errorf | CLOSED |
+
+## Build & Race Verification
+
+- **go build ./...** — PASS (silent)
+- **go test -race ./internal/proxyext/...** — PASS, zero DATA RACE
+
+---
+
+# SMM Extension — Branch Status
+
+**Branch:** `feature/smm-proxyext-v1`  
 **As of:** 2026-07-10 (Session 3 verified)  
 **Spec version:** v0.3-grounded (pressure-tested)
 

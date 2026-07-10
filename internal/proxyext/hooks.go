@@ -67,8 +67,28 @@ func ResetHooksForTest() {
 	dispatchLog = nil
 }
 
+// IsEnabled returns true if SMM is fully initialised and cfg.Enabled is true.
+// This is the single branch that internal/proxy/* should use to gate the SMM
+// code path — it is cheaper than IsActive() + nil check because it combines
+// both checks under one RLock.
+//
+// Usage in proxy_forward.go:
+//
+//	if proxyext.IsEnabled() {
+//		fc := &proxyext.ForwardContext{ ... }
+//		// ... retry loop ...
+//	}
+func IsEnabled() bool {
+	hooksMu.RLock()
+	defer hooksMu.RUnlock()
+	return activeHooks != nil && activeCfg != nil && activeCfg.Enabled
+}
+
 // IsActive returns true if a non-noop Hooks implementation is installed.
-// Used by proxy_forward.go to gate the SMM code path with a single branch.
+// Deprecated: prefer IsEnabled() which also checks cfg.Enabled.
+// Retained for any callers that need the hook-presence check independently
+// of the config flag (e.g., tests that install a custom Hooks but do not
+// set Enabled).
 func IsActive() bool {
 	hooksMu.RLock()
 	defer hooksMu.RUnlock()
@@ -150,16 +170,27 @@ func OnPostResponse(fc *ForwardContext, result ForwardResult) {
 }
 
 // TransformStaticPayload dispatches to the active implementation.
-// Errors are swallowed (fail-open) — a broken transform must never drop the
-// request.
+// Errors are swallowed (fail-open) — a broken transform must never drop a
+// request. However, errors ARE logged as smm_static_plan_fail so that
+// operators can distinguish a healthy no-op from a silent failure.
+// Before this fix, a panicking or erroring staticplan was invisible in logs.
 func TransformStaticPayload(fc *ForwardContext, prompt *AssembledPrompt) error {
 	hooksMu.RLock()
 	h := activeHooks
+	l := dispatchLog
 	hooksMu.RUnlock()
 	if h == nil {
 		return nil
 	}
-	// Fail-open: swallow error — a broken staticplan must never drop a request.
-	_ = h.TransformStaticPayload(fc, prompt)
+	if err := h.TransformStaticPayload(fc, prompt); err != nil {
+		// Fail-open: swallow the error so the request is never dropped.
+		// Log it so operators have a signal — smm_static_plan_fail=true
+		// means staticplan ran and returned an error. smm_static_plan_noop
+		// (logged by the implementation) means it ran and chose not to act.
+		if l != nil {
+			l.Printf("[smm] smm_static_plan_fail=true smm_static_noop_reason=error err=%v thread=%s",
+				err, fc.ReqCtx.ThreadID)
+		}
+	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 )
 
 // Manager orchestrates account selection, auth injection, and pre-stream retry.
@@ -22,26 +23,14 @@ type Config struct {
 	Accounts            []AccountRef
 }
 
-// New creates a Manager from config. Returns nil if the pool is disabled or
-// has no accounts; callers should treat nil as noop.
-func New(cfg Config) *Manager {
-	if !cfg.Enabled || len(cfg.Accounts) == 0 {
-		return nil
-	}
-	import_duration := func(secs int) interface{ Nanoseconds() int64 } {
-		_ = secs // satisfy linter; real import is below
-		return nil
-	}
-	_ = import_duration
-	return nil // replaced by NewManager below
-}
-
-// NewManager is the real constructor.
+// NewManager constructs a Manager from config.
+// Returns nil when the pool is disabled or has no configured accounts;
+// callers must treat a nil *Manager as a no-op (all methods guard on nil receiver).
 func NewManager(cfg Config) *Manager {
 	if !cfg.Enabled || len(cfg.Accounts) == 0 {
 		return nil
 	}
-	cooldown := durationFromSeconds(cfg.CooldownSeconds, 300)
+	cooldown := secondsToDuration(cfg.CooldownSeconds, 300)
 	return &Manager{
 		config:   cfg,
 		selector: NewRoundRobinSelector(cfg.Accounts, cooldown),
@@ -49,9 +38,9 @@ func NewManager(cfg Config) *Manager {
 	}
 }
 
-// InjectAuth selects an account and injects its token into req.
-// Returns the selected AccountRef so the caller can record the result later.
-// Returns an error if no account is available.
+// InjectAuth selects an account and injects its Bearer token into req.
+// Returns the selected AccountRef so the caller can pass it to ShouldRetry later.
+// Returns an error (and AccountRef{}) if no account is available or token retrieval fails.
 func (m *Manager) InjectAuth(ctx context.Context, req *http.Request, meta RequestMeta) (AccountRef, error) {
 	if m == nil {
 		return AccountRef{}, nil
@@ -62,32 +51,45 @@ func (m *Manager) InjectAuth(ctx context.Context, req *http.Request, meta Reques
 	}
 	tok, err := m.provider.GetAccessToken(ctx, acc)
 	if err != nil {
-		// Mark auth error and try next account.
+		// Auth failure on token retrieval: mark invalid and bubble up.
+		// The retry loop in proxy_forward_smm.go will call InjectAuth again
+		// for the next attempt, which will select a different account.
 		m.selector.MarkResult(AccountResult{
 			Account:           acc,
 			ClassifiedFailure: FailureTokenInvalid,
 		})
 		return AccountRef{}, fmt.Errorf("accountpool: get token for %q: %w", acc.Name, err)
 	}
-	// Inject as a Bearer token. This replaces whatever auth the original
-	// request carried (which is typically the API key from the IDE plugin).
+	// Replace whatever auth the original request carried (API key from IDE
+	// plugin, previous rotation attempt, etc.) with this account's Bearer token.
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
-	req.Header.Del("x-api-key") // Claude Code sometimes sends both; clean up.
-	log.Printf("[accountpool] selected account=%q attempt=0", acc.Name)
+	req.Header.Del("x-api-key") // Claude Code sometimes sends both; remove stale key.
+	log.Printf("[accountpool] injected account=%q", acc.Name)
 	return acc, nil
 }
 
-// ShouldRetry inspects a pre-stream response and returns true if the
+// ShouldRetry inspects a pre-stream HTTP response and returns true when the
 // request should be retried with a different account.
-// INVARIANT: returns false always if streamStarted is true.
+//
+// Invariants enforced here (not by caller):
+//   - Always returns false if streamStarted is true.
+//   - Always returns false if attempt >= MaxPreStreamRetries.
+//   - Calls MarkResult on acc before returning, so caller state is always recorded.
 func (m *Manager) ShouldRetry(acc AccountRef, resp *http.Response, streamStarted bool, attempt int) bool {
 	if m == nil {
 		return false
 	}
 	if streamStarted {
-		return false // never replay after bytes flushed
+		// Bytes have been flushed to the client. Retrying would require
+		// replaying the stream from scratch, which we cannot do safely.
+		return false
 	}
 	if attempt >= m.config.MaxPreStreamRetries {
+		// Caller has exhausted the configured retry budget.
+		m.selector.MarkResult(AccountResult{
+			Account:           acc,
+			ClassifiedFailure: Classify(resp, false),
+		})
 		return false
 	}
 	fc := Classify(resp, false)
@@ -98,7 +100,7 @@ func (m *Manager) ShouldRetry(acc AccountRef, resp *http.Response, streamStarted
 	return fc.IsRetryable()
 }
 
-// RecordSuccess records a successful outcome for the account.
+// RecordSuccess records a successful (200 + stream delivered) outcome for acc.
 func (m *Manager) RecordSuccess(acc AccountRef) {
 	if m == nil {
 		return
@@ -106,12 +108,11 @@ func (m *Manager) RecordSuccess(acc AccountRef) {
 	m.selector.MarkResult(AccountResult{Account: acc, ClassifiedFailure: FailureNone})
 }
 
-func durationFromSeconds(secs, defaultSecs int) interface{ } {
-	// We return interface{} to avoid importing time at package level before
-	// the real usage site. The selector accepts time.Duration directly.
-	// This helper exists only for selector construction clarity.
-	// Actual time import is in selector.go.
-	_ = secs
-	_ = defaultSecs
-	return nil
+// secondsToDuration converts an integer seconds value to time.Duration,
+// substituting defaultSecs when secs is zero or negative.
+func secondsToDuration(secs, defaultSecs int) time.Duration {
+	if secs <= 0 {
+		secs = defaultSecs
+	}
+	return time.Duration(secs) * time.Second
 }

@@ -36,42 +36,53 @@ type Hooks interface {
 // ── process-level singleton ──────────────────────────────────────────────────
 
 var (
-	mu          sync.RWMutex
+	hooksMu     sync.RWMutex
 	activeHooks Hooks
 	activeCfg   *SMMConfig
 )
 
 // Init sets the process-wide hook implementation and config. Called once at
 // server startup from proxy.go. Calling Init again replaces the previous
-// implementation (safe for tests; not recommended in production).
+// implementation (safe for tests via ResetHooksForTest; not recommended in
+// production).
 func Init(h Hooks, cfg *SMMConfig) {
-	mu.Lock()
-	defer mu.Unlock()
+	hooksMu.Lock()
+	defer hooksMu.Unlock()
 	activeHooks = h
 	activeCfg = cfg
+}
+
+// ResetHooksForTest restores the singleton to its zero state. Call it in
+// test cleanup (t.Cleanup(proxyext.ResetHooksForTest)) before using t.Parallel
+// so that parallel tests do not race on the package-level variable.
+func ResetHooksForTest() {
+	hooksMu.Lock()
+	defer hooksMu.Unlock()
+	activeHooks = nil
+	activeCfg = nil
 }
 
 // IsActive returns true if a non-noop Hooks implementation is installed.
 // Used by proxy_forward.go to gate the SMM code path with a single branch.
 func IsActive() bool {
-	mu.RLock()
-	defer mu.RUnlock()
+	hooksMu.RLock()
+	defer hooksMu.RUnlock()
 	return activeHooks != nil && activeCfg != nil && activeCfg.Enabled
 }
 
 // ActiveHooks returns the installed Hooks implementation. Returns nil if Init
 // has not been called. Callers must check for nil.
 func ActiveHooks() Hooks {
-	mu.RLock()
-	defer mu.RUnlock()
+	hooksMu.RLock()
+	defer hooksMu.RUnlock()
 	return activeHooks
 }
 
 // ActiveSMMConfig returns the SMMConfig passed to Init. Returns nil if Init
 // has not been called.
 func ActiveSMMConfig() *SMMConfig {
-	mu.RLock()
-	defer mu.RUnlock()
+	hooksMu.RLock()
+	defer hooksMu.RUnlock()
 	return activeCfg
 }
 
@@ -80,12 +91,12 @@ func ActiveSMMConfig() *SMMConfig {
 // recover from panics in OnPostResponse, and enforce the BytesFlushed
 // invariant on OnPreStreamResponse.
 
-// BeforeForward dispatches to the active implementation. If no hooks are
-// installed, it is a no-op (returns nil).
+// BeforeForward dispatches to the active implementation.
+// Returns nil immediately if no hooks are installed.
 func BeforeForward(fc *ForwardContext) error {
-	mu.RLock()
+	hooksMu.RLock()
 	h := activeHooks
-	mu.RUnlock()
+	hooksMu.RUnlock()
 	if h == nil {
 		return nil
 	}
@@ -100,9 +111,9 @@ func OnPreStreamResponse(fc *ForwardContext, resp *http.Response) (RetryDecision
 	if fc.BytesFlushed {
 		return RetryDecision{Retry: false, Reason: "dispatcher_bytes_flushed"}, nil
 	}
-	mu.RLock()
+	hooksMu.RLock()
 	h := activeHooks
-	mu.RUnlock()
+	hooksMu.RUnlock()
 	if h == nil {
 		return RetryDecision{}, nil
 	}
@@ -113,9 +124,9 @@ func OnPreStreamResponse(fc *ForwardContext, resp *http.Response) (RetryDecision
 // implementation are recovered and logged to prevent a misbehaving hook from
 // crashing the server.
 func OnPostResponse(fc *ForwardContext, result ForwardResult) {
-	mu.RLock()
+	hooksMu.RLock()
 	h := activeHooks
-	mu.RUnlock()
+	hooksMu.RUnlock()
 	if h == nil {
 		return
 	}
@@ -132,13 +143,13 @@ func OnPostResponse(fc *ForwardContext, result ForwardResult) {
 // Errors are swallowed (fail-open) — a broken transform must never drop the
 // request.
 func TransformStaticPayload(fc *ForwardContext, prompt *AssembledPrompt) error {
-	mu.RLock()
+	hooksMu.RLock()
 	h := activeHooks
-	mu.RUnlock()
+	hooksMu.RUnlock()
 	if h == nil {
 		return nil
 	}
-	// Fail-open: ignore error, log it if you have a logger available.
+	// Fail-open: swallow error — a broken staticplan must never drop a request.
 	_ = h.TransformStaticPayload(fc, prompt)
 	return nil
 }

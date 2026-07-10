@@ -30,34 +30,30 @@ type ForwardContext struct {
 
 	// OriginalBody is the request body bytes, preserved across retries.
 	// The proxy drains origReq.Body exactly once before the retry loop;
-	// buildSMMProxyReq wraps these bytes in a fresh bytes.Reader per attempt.
+	// SMMForwardWithRetry wraps these bytes in a fresh bytes.Reader per attempt.
 	OriginalBody []byte
 
 	// Attempt is zero-indexed. 0 = first attempt, 1 = first retry, etc.
-	// Incremented by the retry loop in SMMForwardWithRetry before each call
-	// to attemptSMMForward.
+	// Incremented by the retry loop before each call to BeforeForward.
 	Attempt int
 
-	// BytesFlushed is set to false before OnPreStreamResponse is called and
-	// must never be set to true before that call. It exists so the dispatcher
-	// in hooks.go can enforce the post-flush-no-retry invariant as a
-	// defence-in-depth check independent of the implementation.
-	//
-	// The field is present (not computed from resp) because in future the
-	// hook may be called from a context where flush state is tracked
-	// separately from the response object.
+	// BytesFlushed is set to true the moment any response bytes are written
+	// to the client. It must be set before OnPreStreamResponse is called on
+	// any retry attempt. The hooks.go dispatcher enforces Retry:false when
+	// this is true — this field is defence-in-depth at the implementation level.
 	BytesFlushed bool
 
 	// SelectedAccount holds the AccountRef chosen by BeforeForward for this
-	// attempt. Stored here — not in an outbound header — so that:
+	// attempt. It is stored here — not in an outbound header — so that:
 	//   1. Anthropic never receives account identity information.
 	//   2. OnPreStreamResponse can retrieve the full ref without
-	//      reconstructing it from a name string (which would be a thin shell
-	//      missing CredentialDir and Priority).
+	//      reconstructing from a name string (which loses CredentialDir
+	//      and Priority).
 	//
-	// Type is interface{} to avoid an import cycle between proxyext and
-	// proxyext/accountpool. The concrete type is accountpool.AccountRef;
-	// callers that need the full ref perform a type assertion:
+	// Type is interface{} to keep types.go free of the accountpool import
+	// (types.go defines the shared contract between proxyext and internal/proxy;
+	// it must not pull in sub-package dependencies). The concrete type is
+	// accountpool.AccountRef; callers that need the full ref use:
 	//   acc, ok := fc.SelectedAccount.(accountpool.AccountRef)
 	//
 	// A nil value means no account was selected (pool disabled or fail-open).
@@ -98,13 +94,15 @@ type ForwardResult struct {
 // TransformStaticPayload. staticplan may rewrite eligible blocks in-place.
 // The proxy serialises this struct to JSON after TransformStaticPayload returns.
 type AssembledPrompt struct {
-	// System is the system prompt text (or blocks). staticplan may normalise
-	// whitespace or extract large stable sections.
-	System interface{}
+	// System is the system prompt as raw JSON bytes. Using json.RawMessage
+	// preserves byte-exact content and makes the intent explicit — this is
+	// a JSON blob, not an arbitrary Go value. staticplan will unmarshal
+	// only when it needs to inspect the content.
+	System []byte // json.RawMessage
 
-	// Tools is the tools array. Large stable tool descriptions are the
-	// primary staticplan target.
-	Tools interface{}
+	// Tools is the tools array as raw JSON bytes. Large stable tool
+	// descriptions are the primary staticplan target.
+	Tools []byte // json.RawMessage
 
 	// Raw is the full request body as parsed JSON, for transforms that need
 	// to inspect fields that System and Tools do not expose.

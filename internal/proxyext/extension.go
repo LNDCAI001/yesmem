@@ -19,18 +19,18 @@ import (
 // SMMConfig is the top-level YAML block `smm:` loaded by the yesmem config
 // system. All fields default to the zero value (features disabled).
 type SMMConfig struct {
-	Enabled     bool            `yaml:"enabled"`
-	AccountPool AccountPoolCfg  `yaml:"account_pool"`
-	StaticPlan  StaticPlanCfg   `yaml:"static_plan"`
+	Enabled     bool           `yaml:"enabled"`
+	AccountPool AccountPoolCfg `yaml:"account_pool"`
+	StaticPlan  StaticPlanCfg  `yaml:"static_plan"`
 }
 
 // AccountPoolCfg mirrors the `smm.account_pool` YAML block.
 type AccountPoolCfg struct {
-	Enabled                 bool                     `yaml:"enabled"`
-	MaxPreStreamRetries     int                      `yaml:"max_prestream_retries"`
-	CooldownSecondsAfter429 int                      `yaml:"cooldown_seconds_after_429"`
-	ApplyToSubagents        bool                     `yaml:"apply_to_subagents"`
-	Accounts                []AccountPoolAccountCfg  `yaml:"accounts"`
+	Enabled              bool                    `yaml:"enabled"`
+	MaxPreStreamRetries  int                     `yaml:"max_prestream_retries"`
+	CooldownSeconds      int                     `yaml:"cooldown_seconds_after_429"`
+	ApplyToSubagents     bool                    `yaml:"apply_to_subagents"`
+	Accounts             []AccountPoolAccountCfg `yaml:"accounts"`
 }
 
 // AccountPoolAccountCfg is one entry in `smm.account_pool.accounts`.
@@ -41,14 +41,15 @@ type AccountPoolAccountCfg struct {
 }
 
 // StaticPlanCfg mirrors the `smm.static_plan` YAML block.
+// ExperimentalMultimodal is intentionally absent in v1 — it is not in scope
+// and encoding it in the config struct would invite accidental enablement.
 type StaticPlanCfg struct {
-	Enabled                 bool   `yaml:"enabled"`
-	Mode                    string `yaml:"mode"`
-	MinBytes                int    `yaml:"min_bytes"`
-	CacheByHash             bool   `yaml:"cache_by_hash"`
-	FailOpen                bool   `yaml:"fail_open"`
-	ApplyToSubagents        bool   `yaml:"apply_to_subagents"`
-	ExperimentalMultimodal  bool   `yaml:"experimental_multimodal"`
+	Enabled          bool   `yaml:"enabled"`
+	Mode             string `yaml:"mode"`
+	MinBytes         int    `yaml:"min_bytes"`
+	CacheByHash      bool   `yaml:"cache_by_hash"`
+	FailOpen         bool   `yaml:"fail_open"`
+	ApplyToSubagents bool   `yaml:"apply_to_subagents"`
 }
 
 // smmHooks is the live implementation returned by NewSMMHooks when SMM is
@@ -69,13 +70,14 @@ func NewSMMHooks(cfg SMMConfig, logger *log.Logger) (Hooks, error) {
 
 	var pool *accountpool.Pool
 	if cfg.AccountPool.Enabled {
-		poolCfg := accountpool.PoolConfig{
-			MaxPreStreamRetries:     cfg.AccountPool.MaxPreStreamRetries,
-			CooldownSecondsAfter429: cfg.AccountPool.CooldownSecondsAfter429,
-			ApplyToSubagents:        cfg.AccountPool.ApplyToSubagents,
+		poolCfg := accountpool.Config{
+			Enabled:             true,
+			MaxPreStreamRetries: cfg.AccountPool.MaxPreStreamRetries,
+			CooldownSeconds:     cfg.AccountPool.CooldownSeconds,
+			ApplyToSubagents:    cfg.AccountPool.ApplyToSubagents,
 		}
 		for _, a := range cfg.AccountPool.Accounts {
-			poolCfg.Accounts = append(poolCfg.Accounts, accountpool.AccountCfg{
+			poolCfg.Accounts = append(poolCfg.Accounts, accountpool.AccountRef{
 				Name:          a.Name,
 				CredentialDir: a.CredentialDir,
 				Priority:      a.Priority,
@@ -112,23 +114,28 @@ func (h *smmHooks) BeforeForward(fc *ForwardContext) error {
 		IsSubagent: fc.ReqCtx.IsSubagent,
 	}
 
-	acc, token, err := h.pool.SelectAndGetToken(context.Background(), meta)
+	acc, tok, err := h.pool.SelectAndGetToken(context.Background(), meta)
 	if err != nil {
-		// Fail open: log and let the request proceed with whatever auth
-		// the client originally provided. This preserves the constraint
-		// "fail open everywhere except hard auth exhaustion".
+		// Fail open: if all accounts are exhausted, surface the error so the
+		// caller can return a clean failure rather than silently using stale auth.
+		// For all other selection errors, log and let the request proceed with
+		// the client's original auth (preserves the fail-open constraint).
 		if accountpool.IsExhausted(err) {
 			return fmt.Errorf("smm: all accounts exhausted: %w", err)
 		}
-		h.logger.Printf("[smm] BeforeForward: account selection error (fail open): %v", err)
+		h.logger.Printf("[smm] smm_account_select_error=true reason=%v (fail open)", err)
 		return nil
 	}
 
-	// Inject auth. The token is a Bearer string from the OAuth store.
-	fc.OutboundReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	// Inject auth. tok.Token is the Bearer string from the OAuth store.
+	fc.OutboundReq.Header.Set("Authorization", "Bearer "+tok.Token)
+	// Claude Code sometimes sends both Authorization and x-api-key. Remove
+	// the API-key header so only the pool-injected token reaches Anthropic.
+	fc.OutboundReq.Header.Del("x-api-key")
 
-	// Store the full ref in ForwardContext so OnPreStreamResponse can read
-	// it without reconstructing from a header string.
+	// Store the full ref in ForwardContext so OnPreStreamResponse can retrieve
+	// it without reconstructing from a name string.
+	// Type is interface{} to keep types.go free of the accountpool import.
 	fc.SelectedAccount = acc
 
 	h.logger.Printf("[smm] smm_account_selected=%s smm_account_attempt=%d",
@@ -147,6 +154,7 @@ func (h *smmHooks) OnPreStreamResponse(fc *ForwardContext, resp *http.Response) 
 	}
 
 	// Hard rule: never retry after bytes have been flushed to the client.
+	// The dispatcher also enforces this, but we check here as defence-in-depth.
 	if fc.BytesFlushed {
 		return RetryDecision{Retry: false, Reason: "bytes_already_flushed"}, nil
 	}
@@ -157,18 +165,15 @@ func (h *smmHooks) OnPreStreamResponse(fc *ForwardContext, resp *http.Response) 
 		return RetryDecision{}, nil
 	}
 
-	decision, reason := h.pool.ShouldRetry(resp.StatusCode, fc.Attempt, acc)
+	retry, reason := h.pool.ShouldRetry(resp.StatusCode, fc.Attempt, acc)
 
 	h.logger.Printf("[smm] smm_retry_decision=%v smm_retry_reason=%s smm_account_attempt=%d status=%d",
-		decision, reason, fc.Attempt, resp.StatusCode)
+		retry, reason, fc.Attempt, resp.StatusCode)
 
-	if decision {
-		return RetryDecision{Retry: true, Reason: reason}, nil
-	}
-	return RetryDecision{Retry: false, Reason: reason}, nil
+	return RetryDecision{Retry: retry, Reason: reason}, nil
 }
 
-// OnPostResponse records per-account cache TTL observations and final outcome.
+// OnPostResponse records per-account outcome for state tracking.
 func (h *smmHooks) OnPostResponse(fc *ForwardContext, result ForwardResult) {
 	if h.pool == nil {
 		return
@@ -177,20 +182,18 @@ func (h *smmHooks) OnPostResponse(fc *ForwardContext, result ForwardResult) {
 	if !ok {
 		return
 	}
-
-	outcome := accountpool.AccountResult{
-		StatusCode:          result.StatusCode,
-		CacheReadTokens:     result.CacheReadTokens,
-		CacheCreationTokens: result.CacheCreationTokens,
-		Err:                 result.Err,
+	if result.Err == nil && result.StatusCode < 400 {
+		h.pool.RecordSuccess(acc)
 	}
-	h.pool.MarkResult(acc, outcome)
+	// Non-2xx terminal outcomes are already recorded inside ShouldRetry
+	// (which marks the account before returning). OnPostResponse only needs
+	// to record clean successes that were never passed through ShouldRetry
+	// (e.g. non-streaming 200 responses).
 }
 
 // TransformStaticPayload is a no-op in v1. staticplan is present in the
-// package tree but is gated behind StaticPlanCfg.Enabled and mode != "off".
-// It is not wired into the prompt assembly stage until compress_context.go
-// has been audited for overlap.
+// package tree but is not wired into the prompt assembly stage until
+// compress_context.go has been audited for overlap.
 func (h *smmHooks) TransformStaticPayload(_ *ForwardContext, _ *AssembledPrompt) error {
 	return nil
 }

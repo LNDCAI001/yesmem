@@ -4,6 +4,7 @@ package accountpool
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -17,14 +18,14 @@ type AccountRef struct {
 
 // AccountState tracks runtime health per account.
 type AccountState struct {
-	Ref               AccountRef
-	Status            AccountStatus
-	CooldownUntil     time.Time
-	LastSelectedAt    time.Time
-	LastSuccessAt     time.Time
-	LastQuotaHitAt    time.Time
-	LastAuthErrorAt   time.Time
-	ConsecutiveFails  int
+	Ref              AccountRef
+	Status           AccountStatus
+	CooldownUntil    time.Time
+	LastSelectedAt   time.Time
+	LastSuccessAt    time.Time
+	LastQuotaHitAt   time.Time
+	LastAuthErrorAt  time.Time
+	ConsecutiveFails int
 }
 
 // AccountStatus is the runtime health classification for an account.
@@ -63,24 +64,44 @@ type AccountResult struct {
 type FailureClass int
 
 const (
-	FailureNone FailureClass = iota
-	FailureQuotaLimited    // 429: retry with next account
-	FailureTokenInvalid    // 401 before stream: retry with next account
-	FailureEntitlement     // 403: do not retry
-	FailureUpstreamTransient // 5xx before stream: do not rotate
-	FailureNetworkTimeout  // connection timeout before first byte: do not rotate
-	FailureStreamMidway    // any failure after stream started: never retry
+	FailureNone              FailureClass = iota
+	FailureQuotaLimited                   // 429: retry with next account
+	FailureTokenInvalid                   // 401 before stream: retry with next account
+	FailureEntitlement                    // 403: do not retry this attempt
+	FailureUpstreamTransient              // 5xx before stream: do not rotate
+	FailureNetworkTimeout                 // connection timeout before first byte: do not rotate
+	FailureStreamMidway                   // any failure after stream started: never retry
 )
 
 // IsRetryable returns true iff the failure class warrants trying the next account.
-// StreamMidway, Entitlement, UpstreamTransient, and NetworkTimeout are never
-// retried on a different account.
 func (f FailureClass) IsRetryable() bool {
 	switch f {
 	case FailureQuotaLimited, FailureTokenInvalid:
 		return true
 	default:
 		return false
+	}
+}
+
+// String returns a short machine-readable label suitable for structured logging.
+func (f FailureClass) String() string {
+	switch f {
+	case FailureNone:
+		return "none"
+	case FailureQuotaLimited:
+		return "quota_limited"
+	case FailureTokenInvalid:
+		return "token_invalid"
+	case FailureEntitlement:
+		return "entitlement_mismatch"
+	case FailureUpstreamTransient:
+		return "upstream_transient"
+	case FailureNetworkTimeout:
+		return "network_timeout"
+	case FailureStreamMidway:
+		return "stream_midway"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(f))
 	}
 }
 

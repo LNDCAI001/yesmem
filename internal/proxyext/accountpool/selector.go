@@ -45,27 +45,43 @@ func (r *RoundRobinSelector) Select(_ context.Context, _ RequestMeta) (AccountRe
 }
 
 // MarkResult updates account state based on the forwarding outcome.
+// See the FailureClass constants for the mapping between outcomes and actions.
+//
+// Concurrency note: MarkResult acquires only the StateStore mutex, not r.mu.
+// A concurrent Select may therefore observe stale availability for an account
+// that was just marked into cooldown. This is a deliberate precision trade-off:
+// the worst case is one extra attempt on a cooling account before the cooldown
+// is observed, which is handled gracefully by ShouldRetry on the next call.
 func (r *RoundRobinSelector) MarkResult(result AccountResult) {
 	switch result.ClassifiedFailure {
 	case FailureNone:
 		r.store.RecordSuccess(result.Account.Name)
+
 	case FailureQuotaLimited:
 		r.store.RecordQuotaHit(result.Account.Name, r.cooldown)
+
 	case FailureTokenInvalid:
+		// 401: retry with next account. Hard-fail after 3 consecutive auth
+		// errors (e.g. a token that cannot be refreshed).
 		r.store.RecordAuthError(result.Account.Name, 3)
-	case FailureEntitlementMismatch:
-		// 403: this account cannot serve this request type. Hard-fail
-		// immediately (maxConsecFails=1) so it is never retried again.
-		// No amount of retrying will fix an entitlement problem.
-		r.store.RecordAuthError(result.Account.Name, 1)
-	case FailureNetworkTransient:
-		// Transient network error: short cooldown to allow recovery without
-		// hammering the upstream. 30s is enough for most network blips.
+
+	case FailureEntitlement:
+		// 403: this account cannot serve this request type right now.
+		// Use a 60-second cooldown rather than immediate permanent hard-fail —
+		// Anthropic 403s can be transient permission glitches. After 3
+		// consecutive entitlement errors, hard-fail the account.
+		r.store.RecordQuotaHit(result.Account.Name, 60*time.Second)
+		r.store.RecordAuthError(result.Account.Name, 3)
+
+	case FailureNetworkTimeout, FailureUpstreamTransient:
+		// Transient error: short cooldown to avoid hammering upstream.
 		// Do not hard-fail — the account itself is healthy.
 		r.store.RecordQuotaHit(result.Account.Name, 30*time.Second)
+
 	case FailureStreamMidway:
-		// Stream was already started — record as success from the pool's
-		// perspective (the account delivered bytes; midway failure is upstream).
+		// Stream was already started — the account delivered bytes successfully.
+		// Record as success from the pool's perspective; midway failure is
+		// an upstream disconnect, not an account health issue.
 		r.store.RecordSuccess(result.Account.Name)
 	}
 }

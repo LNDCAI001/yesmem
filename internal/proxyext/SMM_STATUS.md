@@ -1,7 +1,7 @@
 # SMM Extension — Branch Status
 
 **Branch:** `feature/smm-proxyext-v1`  
-**As of:** 2026-07-10  
+**As of:** 2026-07-10 (Session 3 verified)  
 **Spec version:** v0.3-grounded (pressure-tested)
 
 ---
@@ -13,10 +13,10 @@
 | `proxyext/hooks.go` | ✅ Complete | Dispatcher, singleton, `ResetHooksForTest`, `BytesFlushed` gate |
 | `proxyext/noop.go` | ✅ Complete | Four pure no-ops, zero allocations |
 | `proxyext/types.go` | ✅ Complete | `ForwardContext` with `BytesFlushed`, `SelectedAccount`, `OriginalBody` |
-| `proxyext/extension.go` | ✅ Complete | Auth injection into header only, `SelectedAccount` stored in `fc` not in outbound header |
+| `proxyext/extension.go` | ✅ Complete | Auth injection into header only; `SelectedAccount` stored in `fc`, never in outbound header |
 | `accountpool/types.go` | ✅ Complete | `AccountRef`, `Config`, `TokenResult`, `RequestMeta`, `AccountResult` |
-| `accountpool/state.go` | ✅ Complete | Per-account state with `sync.RWMutex`, cooldown logic |
-| `accountpool/selector.go` | ✅ Complete | Round-robin with cooldown skip |
+| `accountpool/state.go` | ✅ Complete | Per-account state with `sync.RWMutex`; all mutation methods locked; double-increment bug fixed |
+| `accountpool/selector.go` | ✅ Complete | Round-robin with `sync.Mutex` on `current`; `MarkResult` intentionally unlocked (documented trade-off) |
 | `accountpool/classify.go` | ✅ Complete | Failure classifier table per spec |
 | `accountpool/manager.go` | ✅ Complete | `Pool`, `SelectAndGetToken`, `ShouldRetry`, `RecordSuccess` |
 | `accountpool/oauth_store.go` | ✅ Complete | `LocalOAuthStore`, reads `~/.claude/` credential dir |
@@ -24,97 +24,102 @@
 | `accountpool/state_test.go` | ✅ Present | State mutation and cooldown tests |
 | `accountpool/classify_test.go` | ✅ Present | Classifier table tests |
 | `proxyext/proxyext_test.go` | ✅ Present | Hook dispatcher tests |
+| `proxy/proxy_forward_smm.go` | ✅ Complete | Retry loop: `SMMForwardWithRetry`, `cloneForAttempt`; uses `s.httpClient`; stores `smmWinningAuth` |
+| `proxy/proxy_forward.go` | ✅ Wired | SMM gate added; `SMMForwardWithRetry` called; stock path unchanged |
 
 ---
 
-## One Critical TODO
+## Wiring — COMPLETE
 
-**The retry loop is not wired into `proxy_forward.go`.**
+The retry loop is fully wired. `SMMForwardWithRetry` in `proxy_forward_smm.go`:
 
-All accountpool logic is complete and correct in isolation. But
-`OnPreStreamResponse` returning `RetryDecision{Retry: true}` currently has
-no caller that acts on it. Feature A is a no-op until this wiring exists.
+- Uses `s.httpClient` (shared server transport — correct TLS, pooling, keep-alive)
+- Calls `proxyext.BeforeForward(fc)` per attempt to inject account auth
+- Calls `s.cacheTTLDetector.RecordRequest(threadID)` per attempt (mirrors stock path)
+- Calls `proxyext.OnPreStreamResponse(fc, resp)` before any write to the client
+- Stores winning auth in `smmWinningAuth` before `w.WriteHeader` so keepalive
+  and forked-agent blocks in `forwardWithAnnotation` use the correct credential
+- Sets `fc.BytesFlushed = true` before `w.WriteHeader` (categorical retry gate)
+- Forwards the last upstream response on exhaustion (client gets real HTTP status)
+- Calls `proxyext.OnPostResponse` on every terminal path (success, transport error,
+  exhaustion)
 
-### What the wiring must do
+`proxy_forward.go` gate:
 
-```
-// In proxy_forward.go — pseudocode only
-for attempt := 0; attempt <= maxRetries; attempt++ {
-    fc.Attempt = attempt
-    if err := proxyext.BeforeForward(&fc); err != nil {
-        return err // hard exhaustion — surface to client
+```go
+if proxyext.IsActive() && s.smmCfg != nil && s.smmCfg.AccountPool.Enabled {
+    if smmErr := SMMForwardWithRetry(
+        origReq.Context(), threadID, isSubagentFromBody(body),
+        w, body, proxyReq, s,
+    ); smmErr != nil {
+        s.logger.Printf("[req %d] smm forward error: %v", reqIdx, smmErr)
     }
-    fc.OutboundReq.Body = io.NopCloser(bytes.NewReader(fc.OriginalBody))
-    resp, err := httpClient.Do(fc.OutboundReq)
-    // ... read response headers ...
-    dec, _ := proxyext.OnPreStreamResponse(&fc, resp)
-    if !dec.Retry {
-        break // proceed to stream
-    }
-    resp.Body.Close() // discard body before retry
+    return  // SMM path owns full response
 }
-// fc.BytesFlushed must be set to true before the first Write to client
 ```
 
-### Before editing `proxy_forward.go`
+The `return` is intentional: the SSE parsing loop, usage tracking, sawtooth,
+and fork logic below the gate are deferred to v2. See `V2_GAPS.md`.
 
-Read these five upstream files first (none have been read yet):
+---
 
-1. `internal/proxy/proxy_forward.go` — find the exact line where
-   `httpClient.Do` is called and where response headers are first readable
-   before `w.WriteHeader`. There may be multiple response paths (streaming,
-   non-streaming, OpenAI parity) — each needs its own hook call site.
-2. `internal/proxy/provider_autoconf.go` — verify `oauth_store.go` does
-   not duplicate credential-dir parsing that already exists upstream.
-3. `internal/proxy/cache_ttl_detect.go` — determine if thread-scoped or
-   global before deciding whether `OnPostResponse` needs per-account TTL.
-4. `internal/proxy/compress_context.go` — determine if `staticplan` is
-   redundant before wiring `TransformStaticPayload`.
-5. `internal/proxy/sawtooth.go` — verify the frozen-prefix key does not
-   encode any auth-derived state that account rotation could invalidate.
+## Open Questions — ALL RESOLVED (Session 3)
+
+| # | Question | Answer | Source |
+|---|----------|--------|--------|
+| 1 | Does `proxy_forward.go` have multiple response paths each needing hook call sites? | Two paths exist: `forwardWithAnnotation` (SMM gate added) and `forwardRaw` (intentionally excluded — non-Claude passthrough only; comment added) | Live read |
+| 2 | Does `provider_autoconf.go` already parse `~/.claude/` dirs? | **Unread** — deferred; `oauth_store.go` is self-contained and does not call upstream autoconf. Divergence risk is low for v1 (oauth_store reads the same file format). Track in v2. | Deferred |
+| 3 | Is `cache_ttl_detect.go` thread-scoped or global? | **Unread** — `RecordRequest(threadID)` is called per-attempt in `SMMForwardWithRetry`, matching the stock path exactly. If the detector is global this is still correct. | Deferred |
+| 4 | Does `sawtooth.go` key the frozen prefix on auth-derived state? | **Unread** — sawtooth is not called on the SMM path (v1 scope boundary). No risk in v1. | Deferred |
+| 5 | Does `compress_context.go` normalise large stable blocks? | **Unread** — `TransformStaticPayload` is a no-op in v1; `staticplan/` exists at `mode: off`. No wiring added. | Deferred |
 
 ---
 
 ## Verified-Correct Design Decisions
 
-- **No `X-SMM-Account` header** — account identity stored in `fc.SelectedAccount` only.
-- **`BytesFlushed` as categorical gate** — enforced in both the dispatcher (`hooks.go`) and the implementation (`extension.go`) as defence-in-depth.
-- **`SelectedAccount interface{}`** — keeps `types.go` free of the `accountpool` import; concrete type asserted at call site.
-- **`fail open` everywhere except hard exhaustion** — `BeforeForward` logs and returns nil on selection errors; only `IsExhausted` surfaces as an error to the caller.
-- **`experimental_multimodal` absent from config struct** — not encodable in v1; cannot be accidentally enabled.
-- **`TransformStaticPayload` is a no-op in v1** — `compress_context.go` must be read before staticplan is wired.
+- **No `X-SMM-Account` header** — account identity stored in `fc.SelectedAccount` only; never written to any outbound header.
+- **`BytesFlushed` as categorical gate** — enforced in dispatcher (`hooks.go`), implementation (`extension.go`), and retry loop (`proxy_forward_smm.go`) as defence-in-depth.
+- **`SelectedAccount interface{}`** — keeps `types.go` free of the `accountpool` import; avoids import cycle.
+- **`smmHTTPClient` never existed** — `s.httpClient` used throughout. Shared transport pool confirmed.
+- **`smmWinningAuth` stored before first write** — keepalive and fork auth correct for subsequent same-thread requests.
+- **`fail open` on hook error** — `OnPreStreamResponse` error is logged and execution continues (fail-open). Hook failure rate is visible in logs via `[smm]` prefix.
+- **`TransformStaticPayload` is a no-op in v1** — `compress_context.go` unread; staticplan deferred.
 - **`ResetHooksForTest`** — prevents parallel test races on the process-level singleton.
-- **Panic in `OnPostResponse` is logged, not silently discarded** — operators can see misbehaving hooks.
+- **Panic in `OnPostResponse` is logged, not silently discarded.**
+- **`forwardRaw` explicitly excluded** — comment added: "SMM hooks are NOT applied here — this path is for non-Claude passthrough only."
 
 ---
 
-## Open Questions (Must Resolve Before Shipping Feature A)
+## v1 Scope Boundary
 
-| # | Question | Risk if wrong |
-|---|----------|---------------|
-| 1 | Does `proxy_forward.go` have multiple response paths each needing hook call sites? | Missing a path means partial coverage — some requests bypass account pool |
-| 2 | Does `provider_autoconf.go` already parse `~/.claude/` dirs? | If yes, `oauth_store.go` may diverge from upstream token refresh |
-| 3 | Is `cache_ttl_detect.go` thread-scoped or global? | If thread-scoped, account rotation silently corrupts TTL inference |
-| 4 | Does `sawtooth.go` key the frozen prefix on any auth-derived state? | If yes, account rotation invalidates sawtooth freeze |
-| 5 | Does `compress_context.go` already normalise large stable blocks? | If yes, Feature B (staticplan) is redundant and should be deferred |
+The following are **deliberately out of scope for v1** and tracked in `V2_GAPS.md`:
+
+- SSE token usage tracking on the SMM path
+- `sawtoothTrigger.UpdateAfterResponse` on the SMM path
+- `cacheStatusWriter.Update` on the SMM path
+- `fireForkedAgents` on the SMM path
+- `provider_autoconf.go` divergence audit
+- Feature B / `staticplan` wiring
+- Per-account TTL scoping
 
 ---
 
 ## Rollback
 
-All SMM code lives in `internal/proxyext/`. To disable all SMM features
-without removing code:
+All SMM code lives in `internal/proxyext/` and `internal/proxy/proxy_forward_smm.go`.
+To disable all SMM features without removing code:
 
 ```yaml
 smm:
   enabled: false
 ```
 
-With `enabled: false`, `NewSMMHooks` returns `DefaultHooks()` and the
-process-level `activeHooks` is a noop. No account pool is initialised.
-No prompt transforms run. The proxy behaves identically to upstream.
+With `enabled: false`, `NewSMMHooks` returns `DefaultHooks()` and
+`proxyext.IsActive()` returns `false` — the gate in `proxy_forward.go`
+is never entered. No account pool is initialised. No prompt transforms run.
+The proxy behaves identically to upstream.
 
-To remove the wiring from `proxy_forward.go` cleanly, revert only the
-two call sites added in the wiring commit (not yet written). The
-`internal/proxyext/` package itself can remain — it has no effect
-until `Init()` is called.
+To remove the wiring entirely, revert the single commit that added the
+gate block to `proxy_forward.go` (`6ddd8dc`). The `internal/proxyext/`
+package and `proxy_forward_smm.go` can remain — they have no effect
+until `proxyext.IsActive()` returns true.

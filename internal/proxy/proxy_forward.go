@@ -49,26 +49,40 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 
 	// ── SMM ACCOUNT POOL GATE ─────────────────────────────────────────────────
 	// When SMM is active and the account pool is enabled, delegate the entire
-	// Do() call — and the pre-stream retry loop — to SMMForwardWithRetry.
-	// SMMForwardWithRetry is guaranteed NOT to call w.WriteHeader or w.Write;
-	// it returns (resp, err) with identical semantics to httpClient.Do so the
-	// rest of this function is unchanged.
+	// forward — including the pre-stream retry loop — to SMMForwardWithRetry.
+	//
+	// SMMForwardWithRetry owns the full response write (status, headers, body).
+	// It calls OnPostResponse internally and stores the winning account auth in
+	// smmWinningAuth before the first byte reaches the client, so the
+	// smmWinningAuth.Load calls in the keepalive and fork blocks below are
+	// correct (they will find the stored value on subsequent requests for the
+	// same threadID).
 	//
 	// cacheTTLDetector.RecordRequest is called inside SMMForwardWithRetry on
-	// every attempt. On the stock path it is called here as before.
+	// every attempt. On the stock path it is called below as before.
 	// ─────────────────────────────────────────────────────────────────────────
-	var resp *http.Response
 	if proxyext.IsActive() && s.smmCfg != nil && s.smmCfg.AccountPool.Enabled {
-		// SMM path: retry loop with account rotation.
-		// cacheTTLDetector.RecordRequest is fired per-attempt inside SMMForwardWithRetry.
-		resp, err = SMMForwardWithRetry(s, w, origReq, body, threadID)
-	} else {
-		// Stock path: unchanged from upstream.
-		if s.cacheTTLDetector != nil {
-			s.cacheTTLDetector.RecordRequest(threadID)
+		// SMM path: full response ownership — return immediately when done.
+		if smmErr := SMMForwardWithRetry(
+			origReq.Context(),
+			threadID,
+			isSubagentFromBody(body),
+			w,
+			body,
+			proxyReq,
+			s,
+		); smmErr != nil {
+			s.logger.Printf("[req %d] smm forward error: %v", reqIdx, smmErr)
 		}
-		resp, err = s.httpClient.Do(proxyReq)
+		return
 	}
+
+	// ── Stock path: unchanged from upstream ──────────────────────────────────
+	if s.cacheTTLDetector != nil {
+		s.cacheTTLDetector.RecordRequest(threadID)
+	}
+	var resp *http.Response
+	resp, err = s.httpClient.Do(proxyReq)
 	if err != nil {
 		s.logger.Printf("upstream error: %v", err)
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)

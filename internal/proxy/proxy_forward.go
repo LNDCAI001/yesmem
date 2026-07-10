@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/LNDCAI001/yesmem/internal/proxyext"
 )
 
 // forwardWithAnnotation forwards the request and extracts annotations from the SSE response.
@@ -45,11 +47,28 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 	proxyReq.Header.Del("Connection")
 	proxyReq.Header.Del("Accept-Encoding") // Force uncompressed for SSE parsing
 
-	if s.cacheTTLDetector != nil {
-		s.cacheTTLDetector.RecordRequest(threadID)
+	// ── SMM ACCOUNT POOL GATE ─────────────────────────────────────────────────
+	// When SMM is active and the account pool is enabled, delegate the entire
+	// Do() call — and the pre-stream retry loop — to SMMForwardWithRetry.
+	// SMMForwardWithRetry is guaranteed NOT to call w.WriteHeader or w.Write;
+	// it returns (resp, err) with identical semantics to httpClient.Do so the
+	// rest of this function is unchanged.
+	//
+	// cacheTTLDetector.RecordRequest is called inside SMMForwardWithRetry on
+	// every attempt. On the stock path it is called here as before.
+	// ─────────────────────────────────────────────────────────────────────────
+	var resp *http.Response
+	if proxyext.IsActive() && s.smmCfg != nil && s.smmCfg.AccountPool.Enabled {
+		// SMM path: retry loop with account rotation.
+		// cacheTTLDetector.RecordRequest is fired per-attempt inside SMMForwardWithRetry.
+		resp, err = SMMForwardWithRetry(s, w, origReq, body, threadID)
+	} else {
+		// Stock path: unchanged from upstream.
+		if s.cacheTTLDetector != nil {
+			s.cacheTTLDetector.RecordRequest(threadID)
+		}
+		resp, err = s.httpClient.Do(proxyReq)
 	}
-
-	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
 		s.logger.Printf("upstream error: %v", err)
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
@@ -413,6 +432,7 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 }
 
 // forwardRaw forwards a request to the upstream API without any annotation extraction.
+// SMM hooks are NOT applied here — this path is for non-Claude passthrough only.
 func (s *Server) forwardRaw(w http.ResponseWriter, origReq *http.Request, body []byte) {
 	targetURL := s.resolveAnthropicTarget(extractModelFromBody(body)) + origReq.URL.RequestURI()
 

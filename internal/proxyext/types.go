@@ -2,153 +2,111 @@ package proxyext
 
 import "net/http"
 
-// RequestContext carries per-request metadata available to all hooks.
-// Fields are read-only from hook implementations — mutations are ignored.
+// RequestContext carries per-request metadata that the SMM extension needs
+// to make routing and gating decisions. It is populated by the proxy before
+// calling BeforeForward.
 type RequestContext struct {
-	// ThreadID is the yesmem thread/session identifier.
-	// INVARIANT: preserved across account rotation. Never changes mid-retry.
+	// ThreadID is the yesmem thread/session identifier. It is preserved
+	// across account rotation — rotating accounts never changes this value.
 	ThreadID string
 
 	// IsSubagent is true when the request originates from a subagent.
-	// Checked by BeforeForward to enforce apply_to_subagents policy.
+	// Used to gate apply_to_subagents behaviour.
 	IsSubagent bool
-
-	// MessageCount is the number of messages in the current conversation.
-	MessageCount int
 }
 
-// ForwardContext is the mutable state carried across hook calls for one
-// request attempt. A new ForwardContext is created per retry loop iteration
-// by SMMForwardWithRetry in proxy_forward_smm.go.
+// ForwardContext is the mutable state passed through the hook lifecycle for
+// a single request attempt. A new ForwardContext is created for each top-level
+// call to SMMForwardWithRetry; Attempt is incremented per retry.
 type ForwardContext struct {
-	// ReqCtx holds per-request read-only metadata.
+	// ReqCtx is the immutable per-request metadata. Never mutated after
+	// construction.
 	ReqCtx RequestContext
 
-	// OriginalBody is the drained request body bytes.
-	// INVARIANT: never nil after SMMForwardWithRetry sets it.
-	// INVARIANT: never modified. Passed to bytes.NewReader on every retry.
-	OriginalBody []byte
-
-	// OutboundReq is the *http.Request that will be sent to the upstream.
-	// BeforeForward may modify its headers (specifically Authorization).
-	// INVARIANT: X-SMM-Account is NEVER set on this request. Account
-	// identity is stored in SelectedAccount, not in HTTP headers.
+	// OutboundReq is the *http.Request that will be sent to Anthropic.
+	// BeforeForward may mutate its headers (auth injection only).
+	// It must never be nil when BeforeForward is called.
 	OutboundReq *http.Request
 
-	// Attempt is the zero-based retry attempt index.
-	// 0 = first attempt, 1 = first retry, etc.
+	// OriginalBody is the request body bytes, preserved across retries.
+	// The proxy drains origReq.Body exactly once before the retry loop;
+	// buildSMMProxyReq wraps these bytes in a fresh bytes.Reader per attempt.
+	OriginalBody []byte
+
+	// Attempt is zero-indexed. 0 = first attempt, 1 = first retry, etc.
+	// Incremented by the retry loop in SMMForwardWithRetry before each call
+	// to attemptSMMForward.
 	Attempt int
 
-	// BytesFlushed is set to true by SMMForwardWithRetry immediately
-	// before w.WriteHeader is called. Any code that observes BytesFlushed==true
-	// MUST NOT trigger a retry.
+	// BytesFlushed is set to false before OnPreStreamResponse is called and
+	// must never be set to true before that call. It exists so the dispatcher
+	// in hooks.go can enforce the post-flush-no-retry invariant as a
+	// defence-in-depth check independent of the implementation.
 	//
-	// INVARIANT: BeforeForward and OnPreStreamResponse are never called
-	// when BytesFlushed==true. This invariant is enforced by the
-	// hooks.go dispatcher AND by SMMForwardWithRetry.
+	// The field is present (not computed from resp) because in future the
+	// hook may be called from a context where flush state is tracked
+	// separately from the response object.
 	BytesFlushed bool
 
-	// SelectedAccount carries the full AccountRef chosen by BeforeForward.
-	// Stored as interface{} to avoid an import cycle between proxyext
-	// and proxyext/accountpool. The concrete type is accountpool.AccountRef.
-	// OnPreStreamResponse type-asserts this value internally.
+	// SelectedAccount holds the AccountRef chosen by BeforeForward for this
+	// attempt. Stored here — not in an outbound header — so that:
+	//   1. Anthropic never receives account identity information.
+	//   2. OnPreStreamResponse can retrieve the full ref without
+	//      reconstructing it from a name string (which would be a thin shell
+	//      missing CredentialDir and Priority).
 	//
-	// WHY interface{}: proxyext imports proxyext/accountpool. If types.go
-	// imported accountpool directly, any addition to accountpool's types
-	// would require recompiling all of proxyext. The interface{} indirection
-	// breaks the coupling at the cost of one type assertion per response.
-	// This is the same pattern used by context.Value in the stdlib.
+	// Type is interface{} to avoid an import cycle between proxyext and
+	// proxyext/accountpool. The concrete type is accountpool.AccountRef;
+	// callers that need the full ref perform a type assertion:
+	//   acc, ok := fc.SelectedAccount.(accountpool.AccountRef)
 	//
-	// INVARIANT: Never nil after a successful BeforeForward call.
-	// INVARIANT: Never appears in log output, error strings, or HTTP headers.
+	// A nil value means no account was selected (pool disabled or fail-open).
 	SelectedAccount interface{}
 }
 
-// RetryDecision is returned by OnPreStreamResponse to instruct the
-// retry loop in SMMForwardWithRetry.
+// RetryDecision is returned by OnPreStreamResponse to indicate whether the
+// retry loop should advance to the next account.
 type RetryDecision struct {
-	// Retry is true when the loop should close the current response,
-	// advance to the next account, and retry the request.
-	// INVARIANT: Retry==true is only honoured when fc.BytesFlushed==false.
-	// The dispatcher in hooks.go enforces this before calling through.
+	// Retry is true if the caller should close the current response body and
+	// attempt the request again with the next available account.
+	// Retry must never be true if BytesFlushed was true when the hook was called.
 	Retry bool
 
-	// Reason is a short machine-readable string for structured logging.
-	// Examples: "quota_limited", "token_invalid", "max_retries_exceeded".
-	// Must not contain sensitive data (tokens, account names).
+	// Reason is a short machine-readable label for structured logging.
+	// Examples: "quota_limited", "token_invalid", "bytes_already_flushed",
+	// "max_retries_exceeded", "not_retryable".
 	Reason string
 }
 
-// ForwardResult carries the outcome after the SSE stream completes.
-// Passed to OnPostResponse for cache-TTL and usage accounting.
+// ForwardResult carries the outcome of a completed request for OnPostResponse.
 type ForwardResult struct {
-	// InputTokens is the total input token count from the response.
-	InputTokens int
-	// OutputTokens is the total output token count.
-	OutputTokens int
-	// CacheReadTokens is the cache_read_input_tokens value.
-	CacheReadTokens int
-	// CacheWriteTokens is the cache_creation_input_tokens value.
-	CacheWriteTokens int
-	// StatusCode is the HTTP status code of the response.
+	// StatusCode is the HTTP status code of the response actually sent to
+	// the client.
 	StatusCode int
+
+	// CacheReadTokens and CacheCreationTokens are extracted from the
+	// upstream response usage block for per-account cache TTL observation.
+	CacheReadTokens     int
+	CacheCreationTokens int
+
+	// Err is non-nil if the request ended in a transport error or a hook
+	// error. HTTP-level errors (4xx/5xx) are expressed via StatusCode, not Err.
+	Err error
 }
 
-// AssembledPrompt is passed to TransformStaticPayload before the request
-// is forwarded. It exposes the mutable system and tool-definition blocks
-// that staticplan is permitted to normalise.
+// AssembledPrompt is the mutable prompt structure passed to
+// TransformStaticPayload. staticplan may rewrite eligible blocks in-place.
+// The proxy serialises this struct to JSON after TransformStaticPayload returns.
 type AssembledPrompt struct {
-	// SystemBlocks is the list of system prompt content blocks.
-	// TransformStaticPayload may normalise text content in place.
-	// INVARIANT: len(SystemBlocks) must not change after transform.
-	SystemBlocks []map[string]interface{}
+	// System is the system prompt text (or blocks). staticplan may normalise
+	// whitespace or extract large stable sections.
+	System interface{}
 
-	// ToolDefinitions is the list of tool definition objects.
-	// TransformStaticPayload may normalise description fields in place.
-	// INVARIANT: tool names and input_schema must not be modified.
-	ToolDefinitions []map[string]interface{}
+	// Tools is the tools array. Large stable tool descriptions are the
+	// primary staticplan target.
+	Tools interface{}
 
-	// ContentHash is set by staticplan after hashing the stable content.
-	// Used for cache lookup on the next call with identical content.
-	ContentHash string
-}
-
-// Hooks is the interface that all hook implementations must satisfy.
-// The noop implementation in noop.go must be zero-allocation for
-// the common case where SMM is disabled.
-//
-// CONCURRENCY: All methods may be called concurrently from multiple
-// goroutines. Implementations must be safe for concurrent use.
-type Hooks interface {
-	// BeforeForward is called after the outbound request is built but
-	// before s.httpClient.Do(proxyReq). Implementations may modify
-	// fc.OutboundReq.Header to inject auth.
-	//
-	// INVARIANT: must not set X-SMM-Account or any SMM-specific header
-	// on fc.OutboundReq — those would be forwarded to the upstream API.
-	// Store account identity in fc.SelectedAccount only.
-	BeforeForward(ctx interface{ Value(key any) any }, fc *ForwardContext) error
-
-	// OnPreStreamResponse is called after s.httpClient.Do returns but
-	// before w.WriteHeader. This is the only window where a retry
-	// decision can be made.
-	//
-	// INVARIANT: if fc.BytesFlushed==true, must return RetryDecision{Retry:false}.
-	// The dispatcher in hooks.go enforces this regardless of what the
-	// implementation returns.
-	OnPreStreamResponse(ctx interface{ Value(key any) any }, fc *ForwardContext, resp *http.Response) (RetryDecision, error)
-
-	// OnPostResponse is called after the SSE stream completes.
-	// Used for cache-TTL observation and usage accounting.
-	// Must not block the response path — called in a goroutine by the dispatcher.
-	OnPostResponse(ctx interface{ Value(key any) any }, fc *ForwardContext, result ForwardResult)
-
-	// TransformStaticPayload is called before the request is forwarded
-	// when staticplan is enabled. May modify SystemBlocks and ToolDefinitions
-	// in place for normalisation. Must be deterministic for the same input.
-	//
-	// INVARIANT: must not drop content. Must not change len(SystemBlocks)
-	// or len(ToolDefinitions). Must not modify tool names or input_schema.
-	// INVARIANT: errors are swallowed by the dispatcher (fail-open contract).
-	TransformStaticPayload(ctx interface{ Value(key any) any }, reqCtx RequestContext, assembled *AssembledPrompt) error
+	// Raw is the full request body as parsed JSON, for transforms that need
+	// to inspect fields that System and Tools do not expose.
+	Raw map[string]interface{}
 }

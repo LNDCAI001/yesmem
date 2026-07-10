@@ -12,7 +12,7 @@
 //    but before httpClient.Do, add:
 //
 //      if proxyext.IsEnabled() {
-//          resp, err = SMMForwardWithRetry(ctx, h, w, origBody, outReq)
+//          err = SMMForwardWithRetry(ctx, threadID, isSubagent, w, origBody, outReq)
 //          if err != nil {
 //              http.Error(w, err.Error(), http.StatusBadGateway)
 //          }
@@ -24,19 +24,19 @@
 //      origBody, err := io.ReadAll(r.Body)
 //      if err != nil { http.Error(w, "read body", 500); return }
 //
-//    yesmem likely already reads the body — verify this before adding the drain.
-//    If it does, pass the already-read bytes here instead.
+//    yesmem likely already reads the body — verify this before adding the
+//    drain. If it does, pass the already-read bytes here instead.
 //
 // INVARIANTS ENFORCED BY THIS FILE
 // ==================================
-//  - BytesFlushed is set to true before the first w.Write. OnPreStreamResponse
-//    is called before any w.Write. These two facts combine to ensure Retry is
-//    never true after flush.
-//  - On max-retry exhaustion with no success, the last upstream response is
-//    forwarded to the client. The client gets a real HTTP error, not a hang.
-//  - Thread/session IDs in ForwardContext are never mutated across retries.
-//  - The outbound request body is re-built from origBody on every attempt;
-//    the original r.Body (already drained) is never re-read.
+//   - BytesFlushed is set to true before the first w.Write. OnPreStreamResponse
+//     is called before any w.Write. These two facts combine to ensure Retry is
+//     never true after flush.
+//   - On max-retry exhaustion with no success, the last upstream response is
+//     forwarded to the client. The client gets a real HTTP error, not a hang.
+//   - Thread/session IDs in ForwardContext are never mutated across retries.
+//   - The outbound request body is re-built from origBody on every attempt;
+//     the original r.Body (already drained) is never re-read.
 package proxy
 
 import (
@@ -48,7 +48,6 @@ import (
 	"time"
 
 	"github.com/LNDCAI001/yesmem/internal/proxyext"
-	"github.com/LNDCAI001/yesmem/internal/proxyext/accountpool"
 )
 
 // smmHTTPClient is the *http.Client used by SMMForwardWithRetry.
@@ -61,13 +60,13 @@ var smmHTTPClient = &http.Client{Timeout: 120 * time.Second}
 // when proxyext.IsEnabled() is true.
 //
 // Parameters:
-//   - ctx:      request context (should carry the client deadline)
-//   - threadID: yesmem thread/session identifier, unchanged across retries
+//   - ctx:        request context (should carry the client deadline)
+//   - threadID:   yesmem thread/session identifier, unchanged across retries
 //   - isSubagent: from the parsed request
-//   - w:        the client ResponseWriter — nothing is written until success
-//   - origBody: the request body, drained exactly once by the caller
-//   - outReq:   the outbound *http.Request already built by proxy_forward.go,
-//               with all headers except Authorization (which BeforeForward injects)
+//   - w:          the client ResponseWriter — nothing is written until success
+//   - origBody:   the request body, drained exactly once by the caller
+//   - outReq:     the outbound *http.Request already built by proxy_forward.go,
+//                 with all headers except Authorization (which BeforeForward injects)
 func SMMForwardWithRetry(
 	ctx context.Context,
 	threadID string,
@@ -81,7 +80,7 @@ func SMMForwardWithRetry(
 		return nil
 	}
 
-	maxAttempts := cfg.AccountPool.MaxPreStreamRetries + 1 // +1 for first attempt
+	maxAttempts := cfg.AccountPool.MaxPreStreamRetries + 1 // +1 for the first attempt
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
@@ -103,49 +102,46 @@ func SMMForwardWithRetry(
 		fc.BytesFlushed = false
 		fc.SelectedAccount = nil
 
-		// Build a fresh clone of outReq with the preserved body.
-		cloned, err := accountpool.ResendWithNewBody(ctx, smmHTTPClient, outReq, origBody)
-		// ResendWithNewBody returns (*http.Response, error). We only need the
-		// cloned request here, not the response — so we use the lower-level
-		// helper to get the clone without sending it.
-		_ = cloned // unused; see the block below for the correct pattern
-		_ = err
-
-		// Actually build the clone for mutation by BeforeForward, then send.
+		// Build a fresh clone of outReq with origBody as the body.
+		// cloneForAttempt deep-copies headers so BeforeForward can freely
+		// mutate the Authorization header without affecting subsequent clones.
 		attemptReq, cloneErr := cloneForAttempt(outReq, origBody)
 		if cloneErr != nil {
 			return cloneErr
 		}
 		fc.OutboundReq = attemptReq
 
-		// Let the hook inject auth for this attempt.
+		// Let the hook select an account and inject its Authorization header.
 		if hookErr := proxyext.BeforeForward(fc); hookErr != nil {
 			// All accounts exhausted — surface as 503.
 			http.Error(w, hookErr.Error(), http.StatusServiceUnavailable)
 			return hookErr
 		}
 
-		// Send the request.
+		// Send the request upstream. fc.OutboundReq now carries the injected
+		// auth header and a fresh body reader; it is safe to pass directly.
 		resp, doErr := smmHTTPClient.Do(fc.OutboundReq)
 		if doErr != nil {
 			lastErr = doErr
-			// Transport error — do not retry (FailureNetworkTimeout is not rotatable).
-			// Mark via OnPreStreamResponse with a synthetic nil resp.
-			// Classify(nil, false) returns FailureNetworkTimeout which IsRetryable=false.
+			// Transport error — call OnPreStreamResponse with nil resp so the
+			// hook can record the failure (classify returns non-retryable for
+			// network timeouts; the loop will break after this).
 			proxyext.OnPreStreamResponse(fc, nil) //nolint:errcheck
 			break
 		}
 		lastResp = resp
 
 		// Read the retry decision BEFORE writing anything to the client.
-		// fc.BytesFlushed is false here — the dispatcher enforces this as a gate.
+		// fc.BytesFlushed is false here; the dispatcher enforces this as a
+		// categorical gate — Retry can never be true after flush.
 		decision, hookErr := proxyext.OnPreStreamResponse(fc, resp)
 		if hookErr != nil {
 			log.Printf("[smm] OnPreStreamResponse error (ignored, fail-open): %v", hookErr)
 		}
 
 		if decision.Retry {
-			// Close the body before the next attempt to avoid leaking connections.
+			// Close the body before the next attempt to avoid leaking
+			// connections back to the upstream transport pool.
 			resp.Body.Close()
 			continue
 		}
@@ -157,7 +153,7 @@ func SMMForwardWithRetry(
 		_, copyErr := io.Copy(w, resp.Body)
 		resp.Body.Close()
 
-		// Record outcome.
+		// Record outcome for observability and per-account state.
 		result := proxyext.ForwardResult{
 			StatusCode: resp.StatusCode,
 			Err:        copyErr,
@@ -167,7 +163,10 @@ func SMMForwardWithRetry(
 		return copyErr
 	}
 
-	// Exhausted all attempts. Forward the last response if we have one.
+	// ── Exhausted all attempts ────────────────────────────────────────────────
+
+	// Forward the last response if we received one, so the client gets a real
+	// HTTP status rather than a silent hang or an empty connection reset.
 	if lastResp != nil {
 		w.WriteHeader(lastResp.StatusCode)
 		fc.BytesFlushed = true
@@ -177,7 +176,7 @@ func SMMForwardWithRetry(
 		return nil
 	}
 
-	// Transport error with no response at all.
+	// Pure transport error with no HTTP response at all.
 	if lastErr != nil {
 		proxyext.OnPostResponse(fc, proxyext.ForwardResult{Err: lastErr})
 		http.Error(w, "upstream error: "+lastErr.Error(), http.StatusBadGateway)
@@ -188,9 +187,10 @@ func SMMForwardWithRetry(
 }
 
 // cloneForAttempt creates a fresh outbound request with origBody as the body.
-// Headers are deep-copied so BeforeForward can mutate them freely.
+// Headers are deep-copied so BeforeForward can mutate the Authorization header
+// freely without affecting the base request or subsequent clones.
 func cloneForAttempt(base *http.Request, origBody []byte) (*http.Request, error) {
-	cloned := base.Clone(base.Context())
+	cloned := base.Clone(context.Background())
 	cloned.Body = io.NopCloser(bytes.NewReader(origBody))
 	cloned.ContentLength = int64(len(origBody))
 	cloned.GetBody = func() (io.ReadCloser, error) {

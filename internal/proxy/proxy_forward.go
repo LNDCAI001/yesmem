@@ -189,6 +189,13 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 				if apiKey == "" {
 					apiKey = origReq.Header.Get("Authorization")
 				}
+				// ── SMM PATCH: use winning account credential for keepalive ──
+				// On the SMM path, origReq carries the client's inbound auth.
+				// The winning subscription account's auth is stored in smmWinningAuth.
+				// Using origReq auth here would ping the wrong account's cache.
+				if v, ok := smmWinningAuth.Load(threadID); ok {
+					apiKey = v.(string)
+				}
 				s.cacheKeepalive.Reset(threadID, body, apiKey)
 			}
 			// Store response timestamp (non-streaming path)
@@ -360,6 +367,13 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 			if apiKey == "" {
 				apiKey = origReq.Header.Get("Authorization")
 			}
+			// ── SMM PATCH: use winning account credential for keepalive ──
+			// On the SMM path, origReq carries the client's inbound auth.
+			// The winning subscription account's auth is stored in smmWinningAuth.
+			// Using origReq auth here would ping the wrong account's cache.
+			if v, ok := smmWinningAuth.Load(threadID); ok {
+				apiKey = v.(string)
+			}
 			s.cacheKeepalive.Reset(threadID, body, apiKey)
 		}
 
@@ -393,6 +407,17 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 				}
 				s.lastInjectedIDsMu.Unlock()
 
+				// ── SMM PATCH: use winning account credential for forked agents ──
+				// Forked agents launched with origReq.Header would use the client's
+				// inbound auth, which on the SMM path is the proxy's loopback key.
+				// Clone the header and override Authorization with the winning
+				// account credential so forked agents hit Anthropic directly.
+				forkAuthHeader := origReq.Header.Clone()
+				if v, ok := smmWinningAuth.Load(threadID); ok {
+					forkAuthHeader.Set("Authorization", v.(string))
+					forkAuthHeader.Del("x-api-key")
+				}
+
 				go s.fireForkedAgents(ForkContext{
 					OriginalBody:      body,
 					AssistantResponse: fullResponseText.String(),
@@ -405,7 +430,7 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 					InjectedIDs:       injectedCopy,
 					LastExtractedIdx:  reqIdx - 2, // previous turn
 					SessionID:         threadID,
-					AuthHeader:        origReq.Header,
+					AuthHeader:        forkAuthHeader,
 				}, s.forkConfigs)
 			}
 		}

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/proxyext/staticplan"
+	"github.com/LNDCAI001/yesmem/internal/proxyext/staticplan"
 )
 
 func TestPlannerDisabledByDefault(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/proxyext/accountpool"
+	"github.com/LNDCAI001/yesmem/internal/proxyext/accountpool"
 )
 
 func TestClassify(t *testing.T) {

@@ -1,9 +1,13 @@
 package accountpool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -73,17 +77,145 @@ func InvalidateToken(credentialDir string) {
 type LocalOAuthStore struct{}
 
 // claudeCredentials mirrors the subset of fields we need from .credentials.json.
+type claudeOAuthInner struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresAt    int64  `json:"expiresAt"` // Unix milliseconds
+}
+
 type claudeCredentials struct {
-	ClaudeAIAccessToken string `json:"claudeAiSessionToken"` // subscription session token
-	ExpiresAt           string `json:"expiresAt"`            // RFC3339 or empty
-	AccessToken         string `json:"access_token"`         // API-key style, fallback
+	ClaudeAiOauth claudeOAuthInner `json:"claudeAiOauth"`
+}
+
+// oauthTokenEndpoint is the Claude OAuth refresh endpoint.
+const oauthTokenEndpoint = "https://claude.ai/api/auth/oauth/token"
+
+// defaultHTTPClient is package-level so tests can swap it.
+var defaultHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
+// RefreshAccessToken implements TokenProvider. It checks whether the stored
+// token is expired or within 5 minutes of expiry and, if so, calls the Claude
+// OAuth refresh endpoint to obtain a new access token. On success the updated
+// credentials are written back to the credential file on disk.
+func (s *LocalOAuthStore) RefreshAccessToken(ctx context.Context, account AccountRef) error {
+	dir := account.CredentialDir
+	if dir == "" {
+		return fmt.Errorf("accountpool: empty credential_dir for account %q", account.Name)
+	}
+	if len(dir) > 1 && dir[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("accountpool: expand home for %q: %w", account.Name, err)
+		}
+		dir = filepath.Join(home, dir[2:])
+	}
+
+	credsPath := filepath.Join(dir, ".credentials.json")
+	data, err := os.ReadFile(credsPath)
+	if err != nil {
+		return fmt.Errorf("accountpool: read credentials %q: %w", credsPath, err)
+	}
+
+	var creds claudeCredentials
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return fmt.Errorf("accountpool: parse credentials %q: %w", credsPath, err)
+	}
+
+	// No refresh token available — cannot refresh.
+	if creds.ClaudeAiOauth.RefreshToken == "" {
+		return fmt.Errorf("accountpool: no refresh token in %q", credsPath)
+	}
+
+	// Check whether refresh is needed: expired or within 5-minute grace.
+	const refreshGrace = 5 * time.Minute
+	needsRefresh := false
+	if creds.ClaudeAiOauth.ExpiresAt > 0 {
+		expiry := time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
+		if time.Now().After(expiry.Add(-refreshGrace)) {
+			needsRefresh = true
+		}
+	} else {
+		// No expiry timestamp — assume it needs rotation.
+		needsRefresh = true
+	}
+	if !needsRefresh {
+		return nil // still fresh
+	}
+
+	// Build the refresh request.
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", creds.ClaudeAiOauth.RefreshToken)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, oauthTokenEndpoint, bytes.NewReader([]byte(form.Encode())))
+	if err != nil {
+		return fmt.Errorf("accountpool: create refresh request for %q: %w", account.Name, err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("accountpool: refresh request failed for %q: %w", account.Name, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("accountpool: read refresh response for %q: %w", account.Name, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("accountpool: refresh failed for %q: HTTP %d: %s", account.Name, resp.StatusCode, string(respBody))
+	}
+
+	// Parse response — Claude returns accessToken + expiresIn (seconds).
+	var refreshResp struct {
+		AccessToken string `json:"accessToken"`
+		ExpiresIn   int64  `json:"expiresIn"`
+		// The response may also include a new refreshToken; we keep the
+		// existing one if none is returned.
+		RefreshToken string `json:"refreshToken,omitempty"`
+	}
+	if err := json.Unmarshal(respBody, &refreshResp); err != nil {
+		return fmt.Errorf("accountpool: parse refresh response for %q: %w", account.Name, err)
+	}
+
+	if refreshResp.AccessToken == "" {
+		return fmt.Errorf("accountpool: refresh response missing accessToken for %q", account.Name)
+	}
+
+	// Compute the new expiry.
+	var newExpiresAt int64
+	if refreshResp.ExpiresIn > 0 {
+		newExpiresAt = time.Now().Add(time.Duration(refreshResp.ExpiresIn) * time.Second).UnixMilli()
+	} else {
+		// Fallback: extend by 24 hours (Claude OAuth default).
+		newExpiresAt = time.Now().Add(24 * time.Hour).UnixMilli()
+	}
+
+	// Update the credentials struct.
+	creds.ClaudeAiOauth.AccessToken = refreshResp.AccessToken
+	creds.ClaudeAiOauth.ExpiresAt = newExpiresAt
+	if refreshResp.RefreshToken != "" {
+		creds.ClaudeAiOauth.RefreshToken = refreshResp.RefreshToken
+	}
+
+	updated, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return fmt.Errorf("accountpool: marshal updated credentials for %q: %w", account.Name, err)
+	}
+
+	if err := os.WriteFile(credsPath, updated, 0600); err != nil {
+		return fmt.Errorf("accountpool: write updated credentials %q: %w", credsPath, err)
+	}
+
+	return nil
 }
 
 // GetAccessToken implements TokenProvider.
 // On cache hit (within tokenCacheTTL and not invalidated), returns the cached
 // token without a disk read. On cache miss or invalidation, reads the
 // credential file, validates the token, and updates the cache.
-func (s *LocalOAuthStore) GetAccessToken(_ context.Context, account AccountRef) (TokenResult, error) {
+func (s *LocalOAuthStore) GetAccessToken(ctx context.Context, account AccountRef) (TokenResult, error) {
 	// Ensure the background eviction goroutine is running.
 	startEviction()
 
@@ -126,19 +258,38 @@ func (s *LocalOAuthStore) GetAccessToken(_ context.Context, account AccountRef) 
 		return TokenResult{}, fmt.Errorf("accountpool: parse credentials %q: %w", credsPath, err)
 	}
 
-	// Prefer subscription session token; fall back to access_token field.
-	token := creds.ClaudeAIAccessToken
-	if token == "" {
-		token = creds.AccessToken
-	}
+	token := creds.ClaudeAiOauth.AccessToken
 	if token == "" {
 		return TokenResult{}, fmt.Errorf("accountpool: no usable token in %q", credsPath)
 	}
 
 	result := TokenResult{Token: token}
-	if creds.ExpiresAt != "" {
-		if t, err := time.Parse(time.RFC3339, creds.ExpiresAt); err == nil {
-			result.ExpiresAt = t
+	if creds.ClaudeAiOauth.ExpiresAt > 0 {
+		result.ExpiresAt = time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
+	}
+
+	// Proactive refresh: if the token is expired or within 5 minutes of expiry,
+	// try to refresh before returning. This avoids unnecessary 401 failures
+	// and keeps the account pool healthy.
+	if !result.ExpiresAt.IsZero() {
+		const refreshThreshold = 5 * time.Minute
+		if time.Now().After(result.ExpiresAt.Add(-refreshThreshold)) {
+			if err := s.RefreshAccessToken(ctx, account); err != nil {
+				// Refresh failed — fall through to the strict check below.
+				// Logging is done at the Pool level.
+			} else {
+				// Refresh succeeded — re-read the updated file.
+				data, err = os.ReadFile(credsPath)
+				if err == nil {
+					if err := json.Unmarshal(data, &creds); err == nil {
+						token = creds.ClaudeAiOauth.AccessToken
+						result = TokenResult{Token: token}
+						if creds.ClaudeAiOauth.ExpiresAt > 0 {
+							result.ExpiresAt = time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
+						}
+					}
+				}
+			}
 		}
 	}
 

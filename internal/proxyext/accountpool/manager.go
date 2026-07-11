@@ -51,12 +51,23 @@ func NewPool(cfg Config, logger *log.Logger) (*Pool, error) {
 	// CooldownSeconds=0 means no cooldown — rotate immediately.
 	// A positive value sets the cooldown duration after a 429.
 	cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
-	return &Pool{
+	pool := &Pool{
 		cfg:      cfg,
 		sel:      NewRoundRobinSelector(cfg.Accounts, cooldown),
 		provider: &LocalOAuthStore{},
 		logger:   logger,
-	}, nil
+	}
+
+	// Proactive refresh: attempt to refresh tokens for all configured
+	// accounts on startup so expired tokens are renewed before the first
+	// request hits the proxy.
+	for _, acc := range cfg.Accounts {
+		if err := pool.provider.RefreshAccessToken(context.Background(), acc); err != nil {
+			logger.Printf("[accountpool] startup refresh for %q failed: %v", acc.Name, err)
+		}
+	}
+
+	return pool, nil
 }
 
 // SelectAndGetToken selects the next available account and fetches its token.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"fmt"
 	"time"
 
 	"github.com/LNDCAI001/yesmem/internal/proxyext/accountpool"
@@ -301,19 +302,22 @@ func TestPool_shouldRetry_maxRetries(t *testing.T) {
 func TestIsExhausted_typedSentinel(t *testing.T) {
 	t.Parallel()
 
-	// A pool with one account in hard-fail should return the typed sentinel.
-	sel := accountpool.NewRoundRobinSelector(makeAccounts("a"), 300*time.Second)
-	sel.MarkResult(accountpool.AccountResult{
-		Account:           accountpool.AccountRef{Name: "a"},
-		ClassifiedFailure: accountpool.FailureQuotaLimited,
-	})
-	// All accounts cooling — Select returns an error. Pool wraps it with
-	// errExhausted via fmt.Errorf("%w: %w", errExhausted, err).
-	// We cannot call Pool.SelectAndGetToken without a real provider, so test
-	// IsExhausted directly with a fabricated wrapped error.
-	import_err := fmt.Errorf("%w: some inner error", accountpool.ErrExhaustedSentinel())
-	if !accountpool.IsExhausted(import_err) {
-		t.Error("IsExhausted should return true for a wrapped errExhausted")
+	// Put the sole account into cooldown via ShouldRetry, then verify that
+	// SelectAndGetToken wraps the selector error with the typed sentinel.
+	p, _ := accountpool.NewPool(accountpool.Config{
+		Enabled:             true,
+		MaxPreStreamRetries: 2,
+		CooldownSeconds:     300,
+		Accounts:            makeAccounts("a"),
+	}, nil)
+
+	// ShouldRetry with 429 marks the account as quota-hit -> cooldown.
+	p.ShouldRetry(429, 0, accountpool.AccountRef{Name: "a"})
+
+	// Now the pool has zero available accounts -> returns errExhausted.
+	_, _, err := p.SelectAndGetToken(context.Background(), accountpool.RequestMeta{})
+	if !accountpool.IsExhausted(err) {
+		t.Errorf("IsExhausted should return true for exhausted pool, got: %v", err)
 	}
 
 	// An unrelated error that contains the substring must not match.

@@ -108,6 +108,11 @@ func (f FailureClass) String() string {
 // TokenProvider loads an access token for a given account.
 type TokenProvider interface {
 	GetAccessToken(ctx context.Context, account AccountRef) (TokenResult, error)
+	// RefreshAccessToken proactively refreshes the OAuth token for the given
+	// account by calling the Claude OAuth refresh endpoint. It writes the
+	// updated credentials back to disk on success. A no-op when the token
+	// is still valid (more than 5 minutes until expiry).
+	RefreshAccessToken(ctx context.Context, account AccountRef) error
 }
 
 // Selector chooses an account and records outcomes.

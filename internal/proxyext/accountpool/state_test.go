@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/proxyext/accountpool"
+	"github.com/LNDCAI001/yesmem/internal/proxyext/accountpool"
 )
 
-func makeAccounts() []accountpool.AccountRef {
+func makeAccountsAlt() []accountpool.AccountRef {
 	return []accountpool.AccountRef{
 		{Name: "acct1", CredentialDir: "~/.claude-acct1"},
 		{Name: "acct2", CredentialDir: "~/.claude-acct2"},
@@ -15,7 +15,7 @@ func makeAccounts() []accountpool.AccountRef {
 }
 
 func TestStateStoreAvailableAfterSuccess(t *testing.T) {
-	store := accountpool.NewStateStore(makeAccounts())
+	store := accountpool.NewStateStore(makeAccountsAlt())
 	store.RecordSuccess("acct1")
 	if !store.IsAvailable("acct1") {
 		t.Fatal("should be available after success")
@@ -23,7 +23,7 @@ func TestStateStoreAvailableAfterSuccess(t *testing.T) {
 }
 
 func TestStateStoreCooldownPreventsSelection(t *testing.T) {
-	store := accountpool.NewStateStore(makeAccounts())
+	store := accountpool.NewStateStore(makeAccountsAlt())
 	store.RecordQuotaHit("acct1", 10*time.Minute)
 	if store.IsAvailable("acct1") {
 		t.Fatal("should NOT be available during cooldown")
@@ -31,7 +31,7 @@ func TestStateStoreCooldownPreventsSelection(t *testing.T) {
 }
 
 func TestStateStoreCooldownExpires(t *testing.T) {
-	store := accountpool.NewStateStore(makeAccounts())
+	store := accountpool.NewStateStore(makeAccountsAlt())
 	store.RecordQuotaHit("acct1", 1*time.Nanosecond)
 	time.Sleep(2 * time.Millisecond)
 	if !store.IsAvailable("acct1") {
@@ -40,7 +40,7 @@ func TestStateStoreCooldownExpires(t *testing.T) {
 }
 
 func TestStateStoreHardFailAfterAuthErrors(t *testing.T) {
-	store := accountpool.NewStateStore(makeAccounts())
+	store := accountpool.NewStateStore(makeAccountsAlt())
 	for i := 0; i < 3; i++ {
 		store.RecordAuthError("acct2", 3)
 	}
@@ -50,7 +50,7 @@ func TestStateStoreHardFailAfterAuthErrors(t *testing.T) {
 }
 
 func TestRoundRobinSelectorSkipsCooledDown(t *testing.T) {
-	accounts := makeAccounts()
+	accounts := makeAccountsAlt()
 	sel := accountpool.NewRoundRobinSelector(accounts, 10*time.Minute)
 
 	// Simulate acct1 getting quota-hit.

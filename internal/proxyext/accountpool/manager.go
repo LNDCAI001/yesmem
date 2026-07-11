@@ -58,14 +58,14 @@ func NewPool(cfg Config, logger *log.Logger) (*Pool, error) {
 		logger:   logger,
 	}
 
-	// Proactive refresh: attempt to refresh tokens for all configured
-	// accounts on startup so expired tokens are renewed before the first
-	// request hits the proxy.
+	// Warm cache for all configured accounts on startup so the first
+	// request gets a fast cache hit. RefreshAccessToken reads the credential
+	// file from disk and populates the in-memory cache. It is a no-op on
+	// error (disk not readable, missing tokens, etc.).
 	for _, acc := range cfg.Accounts {
-		if err := pool.provider.RefreshAccessToken(context.Background(), acc); err != nil {
-			logger.Printf("[accountpool] startup refresh for %q failed: %v", acc.Name, err)
-		}
+		_ = pool.provider.RefreshAccessToken(context.Background(), acc)
 	}
+	logger.Printf("[accountpool] cache warmed for %d account(s)", len(cfg.Accounts))
 
 	return pool, nil
 }

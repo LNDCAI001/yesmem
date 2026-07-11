@@ -120,10 +120,10 @@ func runProxy() {
 		pcfg.TargetURL = "https://api.anthropic.com"
 	}
 	if pcfg.TokenThreshold == 0 {
-		pcfg.TokenThreshold = 250000
+		pcfg.TokenThreshold = 80000
 	}
 	if pcfg.TokenMinimumThreshold == 0 {
-		pcfg.TokenMinimumThreshold = 100000
+		pcfg.TokenMinimumThreshold = 40000
 	}
 	if pcfg.KeepRecent == 0 {
 		pcfg.KeepRecent = 10

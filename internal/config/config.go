@@ -478,6 +478,7 @@ func Default() *Config {
 				"codex":    180000,
 				"deepseek": 600000,
 				"glm-5.2":  500000,
+				"fable":    80000,
 			},
 			CustomSystemPrompt: CustomSystemPromptConfig{
 				EnabledOpenCode:   true,

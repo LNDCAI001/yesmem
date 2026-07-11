@@ -141,11 +141,20 @@ proxy:
   # Compress when conversation context exceeds this token count.
   # Lower = more frequent compression (saves cost, loses more detail).
   # Higher = less frequent compression (better context, higher cost).
-  token_threshold: 250000
+  token_threshold: 80000
 
   # Stub down to this floor token count during compaction.
   # Lower = more aggressive compression per cycle.
-  token_minimum_threshold: 100000
+  token_minimum_threshold: 40000
+
+  # Model-specific threshold overrides.
+  # When set, the proxy uses the model-specific threshold instead of the
+  # global token_threshold. Unlisted models fall back to the global value.
+  # Fable 5 overrides are tighter to stay within Pro rate limits.
+  token_thresholds:
+    fable: 80000
+    opus: 120000
+    sonnet: 150000
 
   # How many recent messages stay uncompressed during compaction.
   # These are never compressed so the current working context is preserved.

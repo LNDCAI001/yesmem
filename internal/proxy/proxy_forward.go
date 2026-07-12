@@ -46,6 +46,13 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 	proxyReq.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	proxyReq.Header.Del("Connection")
 	proxyReq.Header.Del("Accept-Encoding") // Force uncompressed for SSE parsing
+	// Strip beta headers: forwarded to the official Anthropic API, any
+	// anthropic-beta / x-anthropic-beta header makes Anthropic bill the
+	// request as "extra usage" against overage credit (empty on a fresh
+	// account) instead of the included subscription, causing 429
+	// out_of_credits. Matches Meridian v1.28.0. See rynfar/meridian#278.
+	proxyReq.Header.Del("anthropic-beta")
+	proxyReq.Header.Del("x-anthropic-beta")
 
 	// ── SMM ACCOUNT POOL GATE ─────────────────────────────────────────────────
 	// When SMM is active and the account pool is enabled, delegate the entire
@@ -494,6 +501,13 @@ func (s *Server) forwardRaw(w http.ResponseWriter, origReq *http.Request, body [
 	proxyReq.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	proxyReq.Header.Del("Connection")
 	proxyReq.Header.Del("Accept-Encoding") // Force uncompressed for SSE parsing
+	// Strip beta headers: forwarded to the official Anthropic API, any
+	// anthropic-beta / x-anthropic-beta header makes Anthropic bill the
+	// request as "extra usage" against overage credit (empty on a fresh
+	// account) instead of the included subscription, causing 429
+	// out_of_credits. Matches Meridian v1.28.0. See rynfar/meridian#278.
+	proxyReq.Header.Del("anthropic-beta")
+	proxyReq.Header.Del("x-anthropic-beta")
 
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {

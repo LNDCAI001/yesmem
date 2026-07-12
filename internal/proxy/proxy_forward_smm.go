@@ -186,5 +186,13 @@ func cloneForAttempt(ctx context.Context, base *http.Request, origBody []byte) (
 		return io.NopCloser(bytes.NewReader(origBody)), nil
 	}
 	cloned.Header = base.Header.Clone()
+	// Strip beta headers: when forwarded to the official Anthropic API, any
+	// anthropic-beta / x-anthropic-beta header causes Anthropic to bill the
+	// request as "extra usage" against the (empty) overage credit bucket
+	// instead of the included subscription window, which 429s as
+	// out_of_credits on a fresh account that has spent nothing. This matches
+	// the Meridian v1.28.0 fix. See Anthropic issue rynfar/meridian#278.
+	cloned.Header.Del("anthropic-beta")
+	cloned.Header.Del("x-anthropic-beta")
 	return cloned, nil
 }

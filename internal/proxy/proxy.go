@@ -546,6 +546,7 @@ func Run(cfg Config) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/accounts", s.handleAccounts)
 	mux.HandleFunc("/", s.handleRequest)
 
 	srv := &http.Server{

@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"sync"
+
+	"github.com/LNDCAI001/yesmem/internal/proxyext/accountpool"
 )
 
 // Hooks is the interface the SMM extension implements. All methods are called
@@ -101,6 +103,22 @@ func ActiveHooks() Hooks {
 	hooksMu.RLock()
 	defer hooksMu.RUnlock()
 	return activeHooks
+}
+
+// ActivePoolAccounts returns a per-account status view from the active SMM
+// pool, or nil if SMM is disabled / no pool is configured. Used by the
+// proxy /accounts status endpoint.
+func ActivePoolAccounts() []accountpool.AccountView {
+	hooksMu.RLock()
+	h := activeHooks
+	hooksMu.RUnlock()
+	if h == nil {
+		return nil
+	}
+	if sh, ok := h.(*smmHooks); ok && sh.pool != nil {
+		return sh.pool.Accounts()
+	}
+	return nil
 }
 
 // ActiveSMMConfig returns the SMMConfig passed to Init. Returns nil if Init

@@ -80,6 +80,11 @@ type ForwardResult struct {
 	// the client.
 	StatusCode int
 
+	// RespHeader carries the upstream response headers for a 2xx success.
+	// It is used to capture anthropic-ratelimit-* headers for per-account
+	// usage tracking. Nil for transport errors / non-2xx outcomes.
+	RespHeader http.Header
+
 	// CacheReadTokens and CacheCreationTokens are extracted from the
 	// upstream response usage block for per-account cache TTL observation.
 	CacheReadTokens     int

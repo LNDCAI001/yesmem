@@ -26,6 +26,7 @@ type AccountState struct {
 	LastQuotaHitAt   time.Time
 	LastAuthErrorAt  time.Time
 	ConsecutiveFails int
+	RateLimits       RateLimitSnapshot
 }
 
 // AccountStatus is the runtime health classification for an account.
@@ -58,6 +59,9 @@ type AccountResult struct {
 	StreamStarted     bool
 	BytesFlushed      bool
 	ClassifiedFailure FailureClass
+	// RespHeader carries upstream response headers (for 2xx successes) so
+	// the store can capture anthropic-ratelimit-* usage snapshots.
+	RespHeader http.Header
 }
 
 // FailureClass classifies upstream failures for retry routing.

@@ -22,11 +22,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"log"
 	"net/http"
 
 	"github.com/LNDCAI001/yesmem/internal/proxyext"
 )
+
+// smmWinningAuth maps threadID -> winning Authorization header value.
+// Written by SMMForwardWithRetry after a successful account selection;
+// read by keepalive and forked-agent paths so they reuse the same credential.
+var smmWinningAuth sync.Map
 
 // SMMForwardWithRetry executes an upstream request with account-pool-aware
 // pre-stream retry. It is called instead of the standard single-attempt path
@@ -69,7 +75,6 @@ func SMMForwardWithRetry(
 		// OutboundReq is set per-attempt below.
 	}
 
-	var lastResp *http.Response
 	var lastErr error
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -112,7 +117,6 @@ func SMMForwardWithRetry(
 			proxyext.OnPostResponse(fc, proxyext.ForwardResult{Err: doErr})
 			break
 		}
-		lastResp = resp
 
 		// Read the retry decision BEFORE writing anything to the client.
 		// fc.BytesFlushed is false here; the dispatcher enforces this as a
@@ -126,7 +130,7 @@ func SMMForwardWithRetry(
 			// Close the body before the next attempt to avoid leaking
 			// connections back to the upstream transport pool.
 			resp.Body.Close()
-			lastErr = fmt.Errorf("smm: retryable response on attempt %d/%d (status %d)", attempt+1, maxAttempts, resp.StatusCode)
+			lastErr = fmt.Errorf("smm: retryable status code %d (attempt %d/%d)", resp.StatusCode, attempt+1, maxAttempts)
 			continue
 		}
 
@@ -159,41 +163,15 @@ func SMMForwardWithRetry(
 
 		// Record outcome for observability and per-account state.
 		proxyext.OnPostResponse(fc, proxyext.ForwardResult{
-			StatusCode: resp.StatusCode,
+			StatusCode:  resp.StatusCode,
+			RespHeader: resp.Header,
 			Err:        copyErr,
 		})
 
 		return copyErr
 	}
-
 	// ── Exhausted all attempts ────────────────────────────────────────────────
-
-	// Forward the last response if we received one, so the client gets a real
-	// HTTP status rather than a silent hang or an empty connection reset.
-	if lastResp != nil {
-		for key, vals := range lastResp.Header {
-			for _, v := range vals {
-				w.Header().Add(key, v)
-			}
-		}
-		fc.BytesFlushed = true
-		w.WriteHeader(lastResp.StatusCode)
-		_, _ = io.Copy(w, lastResp.Body)
-		lastResp.Body.Close()
-		proxyext.OnPostResponse(fc, proxyext.ForwardResult{StatusCode: lastResp.StatusCode})
-		return fmt.Errorf("smm: all %d account attempts exhausted, forwarded last response (status %d)", maxAttempts, lastResp.StatusCode)
-	}
-
-	// Pure transport error with no HTTP response at all.
-	// OnPostResponse was already called in the transport-error branch above.
-	if lastErr != nil {
-		http.Error(w, "upstream error: "+lastErr.Error(), http.StatusBadGateway)
-		return fmt.Errorf("smm: all %d account attempts exhausted (last: %w)", maxAttempts, lastErr)
-	}
-
-	// Should be unreachable: maxAttempts >= 1 and every attempt either returns,
-	// breaks with lastErr set, or continues with lastResp set.
-	return fmt.Errorf("smm: all %d account attempts exhausted with no response and no error (logic error)", maxAttempts)
+	return fmt.Errorf("smm: all %d account attempts exhausted (last: %w)", maxAttempts, lastErr)
 }
 
 // cloneForAttempt creates a fresh outbound request with origBody as the body.

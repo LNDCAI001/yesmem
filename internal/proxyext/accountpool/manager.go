@@ -39,11 +39,73 @@ func IsExhausted(err error) bool {
 	return errors.Is(err, errExhausted)
 }
 
+// snapshot returns a copy of the runtime state for the named account.
+// Used by the selection logger to emit a rolling usage line. The second
+// return value is false if the account is unknown.
+func (p *Pool) snapshot(name string) (AccountState, bool) {
+	if p == nil {
+		return AccountState{}, false
+	}
+	return p.sel.snapshot(name)
+}
+
+// accountRateLimitView renders the rate-limit snapshot for JSON. If no usage
+// data has been captured yet (CapturedAt zero), all count fields are nil so
+// the endpoint shows null ("not provided") rather than a misleading 0.
+func accountRateLimitView(rl RateLimitSnapshot) RateLimitView {
+	if rl.CapturedAt.IsZero() {
+		return RateLimitView{CapturedAt: ""}
+	}
+	return RateLimitView{
+		InputTokensRemaining:  i64OrNil(rl.InputTokensRemaining),
+		InputTokensLimit:      i64OrNil(rl.InputTokensLimit),
+		InputTokensReset:      isoOrNever(rl.InputTokensReset),
+		WeeklyTokensRemaining: i64OrNil(rl.WeeklyTokensRemaining),
+		WeeklyTokensLimit:     i64OrNil(rl.WeeklyTokensLimit),
+		WeeklyTokensReset:     isoOrNever(rl.WeeklyTokensReset),
+		CapturedAt:            isoOrNever(rl.CapturedAt),
+	}
+}
+
+// i64OrNil returns nil for the -1 "not provided" sentinel, else a pointer to v.
+func i64OrNil(v int64) *int64 {
+	if v < 0 {
+		return nil
+	}
+	vv := v
+	return &vv
+}
+
+// isoOrNever renders an RFC3339 timestamp, or "never" for the zero time.
+func isoOrNever(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return t.Format(time.RFC3339)
+}
+
 // NewPool creates an active account pool. Returns (nil, nil) when disabled or
 // when no accounts are configured — callers treat a nil Pool as noop.
 func NewPool(cfg Config, logger *log.Logger) (*Pool, error) {
 	if !cfg.Enabled || len(cfg.Accounts) == 0 {
 		return nil, nil
+	}
+	// Guard: duplicate account names collapse into one StateStore key (the
+	// pool is keyed by Name), so two empty/identical names render the second
+	// account invisible and a single 429 disables the whole pool. Fail loud
+	// instead of silently degrading to one account.
+	seen := make(map[string]int)
+	for _, a := range cfg.Accounts {
+		seen[a.Name]++
+	}
+	var dups []string
+	for n, c := range seen {
+		if c > 1 {
+			dups = append(dups, n)
+		}
+	}
+	if len(dups) > 0 {
+		return nil, fmt.Errorf("accountpool: duplicate account name(s) %v — each account needs a unique name or the pool collapses to one key and a single 429 disables everything", dups)
 	}
 	if logger == nil {
 		logger = log.Default()
@@ -89,7 +151,89 @@ func (p *Pool) SelectAndGetToken(ctx context.Context, meta RequestMeta) (Account
 		return AccountRef{}, TokenResult{}, fmt.Errorf("accountpool: token load for %q: %w", acc.Name, err)
 	}
 	p.logger.Printf("[accountpool] smm_account_selected=%q", acc.Name)
+
+	// Emit a rolling usage line if we have a rate-limit snapshot for the
+	// selected account, so operators can see remaining 5h/7d budget at a glance.
+	if st, ok := p.sel.snapshot(acc.Name); ok && st.RateLimits.CapturedAt != (time.Time{}) {
+		rl := st.RateLimits
+		p.logger.Printf("[accountpool] smm_usage name=%q 5h_remaining=%d/%d reset=%s weekly_remaining=%d/%d reset=%s",
+			acc.Name, rl.InputTokensRemaining, rl.InputTokensLimit, isoOrNever(rl.InputTokensReset),
+			rl.WeeklyTokensRemaining, rl.WeeklyTokensLimit, isoOrNever(rl.WeeklyTokensReset))
+	}
 	return acc, tok, nil
+}
+
+// AccountView is a serialisable snapshot of one account's pool state,
+// used by the proxy /accounts status endpoint.
+type AccountView struct {
+	Name              string `json:"name"`
+	CredentialDir     string `json:"credential_dir"`
+	Status            string `json:"status"`
+	ConsecutiveFails  int    `json:"consecutive_fails"`
+	LastSelectedAt    string `json:"last_selected_at,omitempty"`
+	LastSuccessAt     string `json:"last_success_at,omitempty"`
+	CooldownUntil     string `json:"cooldown_until,omitempty"`
+	RateLimits        RateLimitView `json:"rate_limits"`
+}
+
+// RateLimitView is the JSON form of RateLimitSnapshot.
+// RateLimitView is the JSON form of RateLimitSnapshot. Counts are *int64 so an
+// upstream that does not emit anthropic-ratelimit-* headers serialises them as
+// null ("not provided") rather than a misleading 0/-1.
+type RateLimitView struct {
+	InputTokensRemaining  *int64 `json:"input_tokens_remaining,omitempty"`
+	InputTokensLimit      *int64 `json:"input_tokens_limit,omitempty"`
+	InputTokensReset      string `json:"input_tokens_reset,omitempty"`
+	WeeklyTokensRemaining *int64 `json:"weekly_tokens_remaining,omitempty"`
+	WeeklyTokensLimit     *int64 `json:"weekly_tokens_limit,omitempty"`
+	WeeklyTokensReset     string `json:"weekly_tokens_reset,omitempty"`
+	CapturedAt            string `json:"captured_at,omitempty"`
+}
+
+// Snapshot returns a copy of the runtime state for the named account.
+func (p *Pool) Snapshot(name string) (AccountState, bool) {
+	if p == nil {
+		return AccountState{}, false
+	}
+	return p.sel.snapshot(name)
+}
+
+// Accounts returns a view of every account in the pool. A nil pool returns nil.
+func (p *Pool) Accounts() []AccountView {
+	if p == nil {
+		return nil
+	}
+	views := make([]AccountView, 0, len(p.cfg.Accounts))
+	for _, acc := range p.cfg.Accounts {
+		st, _ := p.sel.snapshot(acc.Name)
+		rl := st.RateLimits
+		views = append(views, AccountView{
+			Name:          acc.Name,
+			CredentialDir: acc.CredentialDir,
+			Status:        st.Status.String(),
+			ConsecutiveFails: st.ConsecutiveFails,
+			LastSelectedAt: isoOrNever(st.LastSelectedAt),
+			LastSuccessAt:  isoOrNever(st.LastSuccessAt),
+			CooldownUntil:  isoOrNever(st.CooldownUntil),
+				RateLimits: accountRateLimitView(rl),
+
+		})
+	}
+	return views
+}
+
+// String renders an AccountStatus for JSON.
+func (a AccountStatus) String() string {
+	switch a {
+	case StatusAvailable:
+		return "available"
+	case StatusCooldown:
+		return "cooldown"
+	case StatusHardFailed:
+		return "hard_failed"
+	default:
+		return "unknown"
+	}
 }
 
 // ShouldRetry inspects a pre-stream HTTP status code and returns whether the
@@ -120,9 +264,11 @@ func (p *Pool) ShouldRetry(statusCode int, attempt int, acc AccountRef) (bool, s
 }
 
 // RecordSuccess marks a successful completion for the given account.
-func (p *Pool) RecordSuccess(acc AccountRef) {
+// RecordSuccess marks a successful completion for the given account.
+// respHeader (may be nil) carries anthropic-ratelimit-* headers for usage tracking.
+func (p *Pool) RecordSuccess(acc AccountRef, respHeader http.Header) {
 	if p == nil {
 		return
 	}
-	p.sel.MarkResult(AccountResult{Account: acc, ClassifiedFailure: FailureNone})
+	p.sel.MarkResult(AccountResult{Account: acc, ClassifiedFailure: FailureNone, RespHeader: respHeader})
 }

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"github.com/LNDCAI001/yesmem/internal/proxyext"
 )
 
 // ProxyStats tracks aggregate proxy metrics.
@@ -47,6 +49,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"annotations":  annCount,
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleAccounts serves a per-account SMM pool status view (which account
+// is active, health, and remaining 5h/7d rate-limit budgets). Returns 200
+// with an "enabled":false body when SMM is disabled.
+func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts := proxyext.ActivePoolAccounts()
+	resp := map[string]any{
+		"enabled":  proxyext.IsEnabled(),
+		"accounts": accounts,
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }

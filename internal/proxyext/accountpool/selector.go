@@ -43,6 +43,12 @@ func (r *RoundRobinSelector) Select(_ context.Context, _ RequestMeta) (AccountRe
 	return AccountRef{}, fmt.Errorf("accountpool: all %d accounts are unavailable", n)
 }
 
+// snapshot returns a copy of the named account's state. Returns false if
+// the account is not known to the store.
+func (r *RoundRobinSelector) snapshot(name string) (AccountState, bool) {
+	return r.store.Get(name)
+}
+
 // MarkResult updates account state based on the forwarding outcome.
 //
 // Concurrency: MarkResult acquires only the StateStore mutex (not r.mu).
@@ -55,7 +61,7 @@ func (r *RoundRobinSelector) Select(_ context.Context, _ RequestMeta) (AccountRe
 func (r *RoundRobinSelector) MarkResult(result AccountResult) {
 	switch result.ClassifiedFailure {
 	case FailureNone:
-		r.store.RecordSuccess(result.Account.Name)
+		r.store.RecordSuccess(result.Account.Name, result.RespHeader)
 
 	case FailureQuotaLimited:
 		r.store.RecordQuotaHit(result.Account.Name, r.cooldown)
@@ -83,6 +89,6 @@ func (r *RoundRobinSelector) MarkResult(result AccountResult) {
 	case FailureStreamMidway:
 		// The account successfully started a stream. Midway disconnect is an
 		// upstream issue, not an account health issue. Record as success.
-		r.store.RecordSuccess(result.Account.Name)
+		r.store.RecordSuccess(result.Account.Name, nil)
 	}
 }

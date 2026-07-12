@@ -1,9 +1,69 @@
 package accountpool
 
 import (
+	"fmt"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
+
+// RateLimitSnapshot captures Anthropic per-account rate-limit headers from a
+// successful response so operators can see remaining 5h-session and 7d-weekly
+// budgets and their reset times.
+type RateLimitSnapshot struct {
+	InputTokensRemaining  int64
+	InputTokensLimit      int64
+	InputTokensReset      time.Time
+	WeeklyTokensRemaining int64
+	WeeklyTokensLimit     int64
+	WeeklyTokensReset     time.Time
+	CapturedAt            time.Time
+}
+
+// captureRateLimits reads Anthropic rate-limit response headers. Empty/unknown
+// headers leave the numeric fields at -1 and times at zero so callers can tell
+// "not provided" apart from "zero remaining".
+func captureRateLimits(h http.Header) RateLimitSnapshot {
+	rl := RateLimitSnapshot{InputTokensRemaining: -1, InputTokensLimit: -1, WeeklyTokensRemaining: -1, WeeklyTokensLimit: -1, CapturedAt: time.Now()}
+	if v := h.Get("anthropic-ratelimit-input-tokens-remaining"); v != "" {
+		if n, err := parseInt64(v); err == nil {
+			rl.InputTokensRemaining = n
+		}
+	}
+	if v := h.Get("anthropic-ratelimit-input-tokens-limit"); v != "" {
+		if n, err := parseInt64(v); err == nil {
+			rl.InputTokensLimit = n
+		}
+	}
+	if v := h.Get("anthropic-ratelimit-input-tokens-reset"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			rl.InputTokensReset = t
+		}
+	}
+	if v := h.Get("anthropic-ratelimit-input-tokens-weekly-remaining"); v != "" {
+		if n, err := parseInt64(v); err == nil {
+			rl.WeeklyTokensRemaining = n
+		}
+	}
+	if v := h.Get("anthropic-ratelimit-input-tokens-weekly-limit"); v != "" {
+		if n, err := parseInt64(v); err == nil {
+			rl.WeeklyTokensLimit = n
+		}
+	}
+	if v := h.Get("anthropic-ratelimit-input-tokens-weekly-reset"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			rl.WeeklyTokensReset = t
+		}
+	}
+	return rl
+}
+
+func parseInt64(s string) (int64, error) {
+	var n int64
+	_, err := fmt.Sscanf(strings.TrimSpace(s), "%d", &n)
+	return n, err
+}
 
 // StateStore holds runtime health state for every configured account.
 // All methods are safe for concurrent use.
@@ -57,7 +117,9 @@ func (s *StateStore) IsAvailable(name string) bool {
 }
 
 // RecordSuccess marks the account healthy and resets consecutive failure count.
-func (s *StateStore) RecordSuccess(name string) {
+// respHeader (may be nil) is inspected for anthropic-ratelimit-* headers so the
+// latest usage snapshot is stored for the /accounts status endpoint.
+func (s *StateStore) RecordSuccess(name string, respHeader http.Header) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.states[name]
@@ -67,6 +129,9 @@ func (s *StateStore) RecordSuccess(name string) {
 	st.Status = StatusAvailable
 	st.LastSuccessAt = time.Now()
 	st.ConsecutiveFails = 0
+	if respHeader != nil {
+		st.RateLimits = captureRateLimits(respHeader)
+	}
 }
 
 // RecordQuotaHit places the account in cooldown for the given duration.

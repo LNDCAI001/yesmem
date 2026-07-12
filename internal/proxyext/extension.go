@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/LNDCAI001/yesmem/internal/proxyext/accountpool"
 )
@@ -86,6 +87,10 @@ func NewSMMHooks(cfg SMMConfig, logger *log.Logger) (Hooks, error) {
 		var err error
 		pool, err = accountpool.NewPool(poolCfg, logger)
 		if err != nil {
+			// Surface pool-config errors LOUDLY. A duplicate-name collapse used to
+			// present only as a runtime 503 (all accounts exhausted) with no startup
+			// signal, so the misconfig was invisible until the first request.
+			logger.Printf("[smm] ACCOUNT_POOL_INIT_FAILED: %v", err)
 			return nil, fmt.Errorf("smm: init account pool: %w", err)
 		}
 	}
@@ -200,7 +205,14 @@ func (h *smmHooks) OnPostResponse(fc *ForwardContext, result ForwardResult) {
 		return
 	}
 	if result.Err == nil && result.StatusCode >= 200 && result.StatusCode < 300 {
-		h.pool.RecordSuccess(acc)
+		h.pool.RecordSuccess(acc, result.RespHeader)
+		// Emit an immediate usage line on success so operators see live
+		// remaining-budget info without waiting for the next selection.
+		if st, ok := h.pool.Snapshot(acc.Name); ok {
+			rl := st.RateLimits
+			h.logger.Printf("[accountpool] smm_usage name=%q 5h_remaining=%s weekly_remaining=%s captured=%s",
+				acc.Name, i64OrDash(rl.InputTokensRemaining), i64OrDash(rl.WeeklyTokensRemaining), isoOrNever(rl.CapturedAt))
+		}
 	}
 	// Non-2xx terminal outcomes and transport errors are already recorded
 	// inside ShouldRetry / MarkResult. OnPostResponse only records clean
@@ -212,4 +224,19 @@ func (h *smmHooks) OnPostResponse(fc *ForwardContext, result ForwardResult) {
 // compress_context.go has been audited for overlap.
 func (h *smmHooks) TransformStaticPayload(_ *ForwardContext, _ *AssembledPrompt) error {
 	return nil
+}
+// i64OrDash renders the -1 "not provided" sentinel as "n/a" for log lines.
+func i64OrDash(v int64) string {
+	if v < 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+// isoOrNever renders an RFC3339 timestamp, or "never" for the zero time.
+func isoOrNever(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return t.Format(time.RFC3339)
 }

@@ -19,6 +19,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"context"
 	"fmt"
 	"io"
@@ -174,11 +175,34 @@ func SMMForwardWithRetry(
 	return fmt.Errorf("smm: all %d account attempts exhausted (last: %w)", maxAttempts, lastErr)
 }
 
+// stripNonAPIFields removes request-body keys that Claude Code / the SDK emit for
+// their own internal context handling but that the Anthropic Messages API rejects
+// with 400 "context_management: Extra inputs are not permitted" (or equivalent).
+// Our fork already strips these in forked_agent.go and cache_keepalive.go; this
+// covers the main SMM forward path, which previously forwarded them verbatim and
+// caused Claude Code to retry the failing request for minutes.
+func stripNonAPIFields(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body // not JSON; forward untouched
+	}
+	for _, k := range []string{"context_management", "anti_distillation"} {
+		delete(m, k)
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // cloneForAttempt creates a fresh outbound request with origBody as the body.
 // ctx is applied to the clone so the request respects the client deadline.
 // Headers are deep-copied so BeforeForward can mutate the Authorization header
 // freely without affecting the base request or subsequent clones.
 func cloneForAttempt(ctx context.Context, base *http.Request, origBody []byte) (*http.Request, error) {
+	// Drop Claude-Code-internal fields the Anthropic API rejects.
+	origBody = stripNonAPIFields(origBody)
 	cloned := base.Clone(ctx)
 	cloned.Body = io.NopCloser(bytes.NewReader(origBody))
 	cloned.ContentLength = int64(len(origBody))

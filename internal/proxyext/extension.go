@@ -210,8 +210,8 @@ func (h *smmHooks) OnPostResponse(fc *ForwardContext, result ForwardResult) {
 		// remaining-budget info without waiting for the next selection.
 		if st, ok := h.pool.Snapshot(acc.Name); ok {
 			rl := st.RateLimits
-			h.logger.Printf("[accountpool] smm_usage name=%q 5h_remaining=%s weekly_remaining=%s captured=%s",
-				acc.Name, i64OrDash(rl.InputTokensRemaining), i64OrDash(rl.WeeklyTokensRemaining), isoOrNever(rl.CapturedAt))
+			h.logger.Printf("[accountpool] smm_usage name=%q 5h_util=%.1f%% 7d_util=%.1f%% status=%s claim=%s captured=%s",
+				acc.Name, rl.Unified5hUtil*100, rl.Unified7dUtil*100, rl.UnifiedStatus, rl.UnifiedRepresentativeClaim, isoOrNever(rl.CapturedAt))
 		}
 	}
 	// Non-2xx terminal outcomes and transport errors are already recorded
@@ -224,13 +224,6 @@ func (h *smmHooks) OnPostResponse(fc *ForwardContext, result ForwardResult) {
 // compress_context.go has been audited for overlap.
 func (h *smmHooks) TransformStaticPayload(_ *ForwardContext, _ *AssembledPrompt) error {
 	return nil
-}
-// i64OrDash renders the -1 "not provided" sentinel as "n/a" for log lines.
-func i64OrDash(v int64) string {
-	if v < 0 {
-		return "n/a"
-	}
-	return fmt.Sprintf("%d", v)
 }
 
 // isoOrNever renders an RFC3339 timestamp, or "never" for the zero time.

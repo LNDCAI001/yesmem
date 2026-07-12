@@ -57,14 +57,31 @@ func accountRateLimitView(rl RateLimitSnapshot) RateLimitView {
 		return RateLimitView{CapturedAt: ""}
 	}
 	return RateLimitView{
-		InputTokensRemaining:  i64OrNil(rl.InputTokensRemaining),
-		InputTokensLimit:      i64OrNil(rl.InputTokensLimit),
-		InputTokensReset:      isoOrNever(rl.InputTokensReset),
-		WeeklyTokensRemaining: i64OrNil(rl.WeeklyTokensRemaining),
-		WeeklyTokensLimit:     i64OrNil(rl.WeeklyTokensLimit),
-		WeeklyTokensReset:     isoOrNever(rl.WeeklyTokensReset),
-		CapturedAt:            isoOrNever(rl.CapturedAt),
+		Unified5hUtil:       f64OrNil(rl.Unified5hUtil * 100),
+		Unified5hReset:      epochToRFC3339(rl.Unified5hReset),
+		Unified7dUtil:       f64OrNil(rl.Unified7dUtil * 100),
+		Unified7dReset:      epochToRFC3339(rl.Unified7dReset),
+		UnifiedStatus:       rl.UnifiedStatus,
+		RepresentativeClaim: rl.UnifiedRepresentativeClaim,
+		CapturedAt:         isoOrNever(rl.CapturedAt),
 	}
+}
+
+// f64OrNil returns nil for the -1 "not provided" sentinel, else a pointer to v.
+func f64OrNil(v float64) *float64 {
+	if v < 0 {
+		return nil
+	}
+	vv := v
+	return &vv
+}
+
+// epochToRFC3339 renders a unix epoch (seconds) as RFC3339, or "" if zero.
+func epochToRFC3339(epoch int64) string {
+	if epoch <= 0 {
+		return ""
+	}
+	return time.Unix(epoch, 0).UTC().Format(time.RFC3339)
 }
 
 // i64OrNil returns nil for the -1 "not provided" sentinel, else a pointer to v.
@@ -156,9 +173,8 @@ func (p *Pool) SelectAndGetToken(ctx context.Context, meta RequestMeta) (Account
 	// selected account, so operators can see remaining 5h/7d budget at a glance.
 	if st, ok := p.sel.snapshot(acc.Name); ok && st.RateLimits.CapturedAt != (time.Time{}) {
 		rl := st.RateLimits
-		p.logger.Printf("[accountpool] smm_usage name=%q 5h_remaining=%d/%d reset=%s weekly_remaining=%d/%d reset=%s",
-			acc.Name, rl.InputTokensRemaining, rl.InputTokensLimit, isoOrNever(rl.InputTokensReset),
-			rl.WeeklyTokensRemaining, rl.WeeklyTokensLimit, isoOrNever(rl.WeeklyTokensReset))
+		p.logger.Printf("[accountpool] smm_usage name=%q 5h_util=%.1f%% 7d_util=%.1f%% status=%s claim=%s",
+			acc.Name, rl.Unified5hUtil*100, rl.Unified7dUtil*100, rl.UnifiedStatus, rl.UnifiedRepresentativeClaim)
 	}
 	return acc, tok, nil
 }
@@ -180,14 +196,16 @@ type AccountView struct {
 // RateLimitView is the JSON form of RateLimitSnapshot. Counts are *int64 so an
 // upstream that does not emit anthropic-ratelimit-* headers serialises them as
 // null ("not provided") rather than a misleading 0/-1.
+// RateLimitView is the JSON form of RateLimitSnapshot. Utilization is shown as a
+// percent (0..100) and resets as RFC3339; nil/empty means "not provided".
 type RateLimitView struct {
-	InputTokensRemaining  *int64 `json:"input_tokens_remaining,omitempty"`
-	InputTokensLimit      *int64 `json:"input_tokens_limit,omitempty"`
-	InputTokensReset      string `json:"input_tokens_reset,omitempty"`
-	WeeklyTokensRemaining *int64 `json:"weekly_tokens_remaining,omitempty"`
-	WeeklyTokensLimit     *int64 `json:"weekly_tokens_limit,omitempty"`
-	WeeklyTokensReset     string `json:"weekly_tokens_reset,omitempty"`
-	CapturedAt            string `json:"captured_at,omitempty"`
+	Unified5hUtil      *float64 `json:"unified_5h_utilization_pct,omitempty"`
+	Unified5hReset     string   `json:"unified_5h_reset,omitempty"`
+	Unified7dUtil      *float64 `json:"unified_7d_utilization_pct,omitempty"`
+	Unified7dReset     string   `json:"unified_7d_reset,omitempty"`
+	UnifiedStatus      string   `json:"unified_status,omitempty"`
+	RepresentativeClaim string  `json:"representative_claim,omitempty"`
+	CapturedAt         string   `json:"captured_at,omitempty"`
 }
 
 // Snapshot returns a copy of the runtime state for the named account.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -11,51 +12,41 @@ import (
 // RateLimitSnapshot captures Anthropic per-account rate-limit headers from a
 // successful response so operators can see remaining 5h-session and 7d-weekly
 // budgets and their reset times.
+// RateLimitSnapshot captures Anthropic per-account rate-limit headers from a
+// successful response. For Claude Max/Pro subscriptions Anthropic emits the
+// "Unified" window headers (Anthropic-Ratelimit-Unified-5h-* and -7d-*): a
+// utilization fraction (0..1) plus an absolute reset epoch and a status. These
+// directly answer "how much of my 5h / 7d budget is left" without needing the
+// older input-tokens-* headers (which some tiers do not send).
 type RateLimitSnapshot struct {
-	InputTokensRemaining  int64
-	InputTokensLimit      int64
-	InputTokensReset      time.Time
-	WeeklyTokensRemaining int64
-	WeeklyTokensLimit     int64
-	WeeklyTokensReset     time.Time
-	CapturedAt            time.Time
+	Unified5hUtil            float64
+	Unified5hReset          int64
+	Unified7dUtil            float64
+	Unified7dReset          int64
+	UnifiedStatus           string
+	UnifiedRepresentativeClaim string
+	CapturedAt              time.Time
 }
 
 // captureRateLimits reads Anthropic rate-limit response headers. Empty/unknown
 // headers leave the numeric fields at -1 and times at zero so callers can tell
 // "not provided" apart from "zero remaining".
 func captureRateLimits(h http.Header) RateLimitSnapshot {
-	rl := RateLimitSnapshot{InputTokensRemaining: -1, InputTokensLimit: -1, WeeklyTokensRemaining: -1, WeeklyTokensLimit: -1, CapturedAt: time.Now()}
-	if v := h.Get("anthropic-ratelimit-input-tokens-remaining"); v != "" {
-		if n, err := parseInt64(v); err == nil {
-			rl.InputTokensRemaining = n
-		}
+	rl := RateLimitSnapshot{Unified5hUtil: -1, Unified7dUtil: -1, CapturedAt: time.Now()}
+	if v := h.Get("Anthropic-Ratelimit-Unified-5h-Utilization"); v != "" {
+		rl.Unified5hUtil = parseFloat64(v)
 	}
-	if v := h.Get("anthropic-ratelimit-input-tokens-limit"); v != "" {
-		if n, err := parseInt64(v); err == nil {
-			rl.InputTokensLimit = n
-		}
+	if v := h.Get("Anthropic-Ratelimit-Unified-5h-Reset"); v != "" {
+		rl.Unified5hReset = parseInt64Default(v, 0)
 	}
-	if v := h.Get("anthropic-ratelimit-input-tokens-reset"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			rl.InputTokensReset = t
-		}
+	if v := h.Get("Anthropic-Ratelimit-Unified-7d-Utilization"); v != "" {
+		rl.Unified7dUtil = parseFloat64(v)
 	}
-	if v := h.Get("anthropic-ratelimit-input-tokens-weekly-remaining"); v != "" {
-		if n, err := parseInt64(v); err == nil {
-			rl.WeeklyTokensRemaining = n
-		}
+	if v := h.Get("Anthropic-Ratelimit-Unified-7d-Reset"); v != "" {
+		rl.Unified7dReset = parseInt64Default(v, 0)
 	}
-	if v := h.Get("anthropic-ratelimit-input-tokens-weekly-limit"); v != "" {
-		if n, err := parseInt64(v); err == nil {
-			rl.WeeklyTokensLimit = n
-		}
-	}
-	if v := h.Get("anthropic-ratelimit-input-tokens-weekly-reset"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			rl.WeeklyTokensReset = t
-		}
-	}
+	rl.UnifiedStatus = h.Get("Anthropic-Ratelimit-Unified-Status")
+	rl.UnifiedRepresentativeClaim = h.Get("Anthropic-Ratelimit-Unified-Representative-Claim")
 	return rl
 }
 
@@ -63,6 +54,30 @@ func parseInt64(s string) (int64, error) {
 	var n int64
 	_, err := fmt.Sscanf(strings.TrimSpace(s), "%d", &n)
 	return n, err
+}
+
+// parseInt64Default parses an int64 header or returns def on empty/error.
+func parseInt64Default(s string, def int64) int64 {
+	if s == "" {
+		return def
+	}
+	n, err := parseInt64(s)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// parseFloat64 parses a utilization fraction header (e.g. "0.42") or -1.
+func parseFloat64(s string) float64 {
+	if s == "" {
+		return -1
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return -1
+	}
+	return v
 }
 
 // StateStore holds runtime health state for every configured account.

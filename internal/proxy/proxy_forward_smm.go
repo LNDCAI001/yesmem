@@ -161,7 +161,10 @@ func SMMForwardWithRetry(
 		fc.BytesFlushed = true
 		w.WriteHeader(resp.StatusCode)
 
-		_, copyErr := io.Copy(w, resp.Body)
+		// io.Copy alone lets net/http buffer partial writes (~4KB) — SSE tokens
+		// would arrive in bursts. Flush after every chunk when the writer
+		// supports it so streamed tokens reach Claude Code immediately.
+		copyErr := flushingCopy(w, resp.Body)
 		resp.Body.Close()
 
 		// Record outcome for observability and per-account state.
@@ -191,6 +194,30 @@ func SMMForwardWithRetry(
 		},
 	})
 	return exhaustErr
+}
+
+// flushingCopy streams src to w, flushing after each chunk so SSE events are
+// delivered as they arrive instead of accumulating in the net/http buffer.
+func flushingCopy(w http.ResponseWriter, src io.Reader) error {
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 // stripNonAPIFields removes request-body keys that Claude Code / the SDK emit for

@@ -119,7 +119,14 @@ func (h *smmHooks) BeforeForward(fc *ForwardContext) error {
 		IsSubagent: fc.ReqCtx.IsSubagent,
 	}
 
-	acc, tok, err := h.pool.SelectAndGetToken(context.Background(), meta)
+	// Use the request context so token fetch/refresh (disk + network I/O) is
+	// cancelled when the client disconnects or its deadline fires; a detached
+	// context.Background() here made the goroutine block uncancellably.
+	selCtx := context.Background()
+	if fc.OutboundReq != nil {
+		selCtx = fc.OutboundReq.Context()
+	}
+	acc, tok, err := h.pool.SelectAndGetToken(selCtx, meta)
 	if err != nil {
 		// Fail open: if all accounts are exhausted, surface the error so the
 		// caller can return a clean failure rather than silently using stale auth.

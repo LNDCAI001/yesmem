@@ -116,7 +116,9 @@ func SMMForwardWithRetry(
 			// (extension.go would panic on resp.StatusCode). Record the failure
 			// directly via OnPostResponse so account state is updated.
 			proxyext.OnPostResponse(fc, proxyext.ForwardResult{Err: doErr})
-			break
+			// Transport errors are per-account (dead connection, DNS, reset) —
+			// rotate to the next account instead of aborting the whole loop.
+			continue
 		}
 
 		// Read the retry decision BEFORE writing anything to the client.
@@ -172,7 +174,23 @@ func SMMForwardWithRetry(
 		return copyErr
 	}
 	// ── Exhausted all attempts ────────────────────────────────────────────────
-	return fmt.Errorf("smm: all %d account attempts exhausted (last: %w)", maxAttempts, lastErr)
+	//
+	// CRITICAL: an explicit error status MUST be written here. Returning without
+	// touching w makes net/http emit an implicit "200 OK" with an empty body;
+	// Claude Code treats that as a malformed-but-successful response and enters
+	// a client-side retry loop for minutes (observed as ~10-minute cold turns).
+	// A well-formed 429 tells the client to back off honestly.
+	exhaustErr := fmt.Errorf("smm: all %d account attempts exhausted (last: %w)", maxAttempts, lastErr)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "rate_limit_error",
+			"message": exhaustErr.Error(),
+		},
+	})
+	return exhaustErr
 }
 
 // stripNonAPIFields removes request-body keys that Claude Code / the SDK emit for

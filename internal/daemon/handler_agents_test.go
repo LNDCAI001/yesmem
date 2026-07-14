@@ -788,6 +788,84 @@ func TestHandleResumeAgentRejectsActiveSuccessor(t *testing.T) {
 	}
 }
 
+// --- L4: opencode unresumable marker (empty OpencodeSessionID) ---
+
+// TestHandleResumeAgent_OpencodeEmptySession_Blocked: resume of an opencode
+// agent whose OpencodeSessionID was never captured must return a clear error
+// instead of falling back to the daemon UUID (which opencode rejects with
+// exit 1 — Learning #80228).
+func TestHandleResumeAgent_OpencodeEmptySession_Blocked(t *testing.T) {
+	h, s := mustHandler(t)
+
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-1", Project: "proj", Section: "task",
+		SessionID: "sess-1", Status: "paused", Backend: "opencode",
+		// OpencodeSessionID intentionally empty — simulates failed poll.
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+
+	resp := h.handleResumeAgent(map[string]any{"to": "agent-1"})
+	if resp.Error == "" {
+		t.Fatal("expected error for opencode agent with empty OpencodeSessionID")
+	}
+	if !strings.Contains(resp.Error, opencodeUnresumableMsg) {
+		t.Errorf("error should contain %q, got %q", opencodeUnresumableMsg, resp.Error)
+	}
+}
+
+// TestHandleResumeAgent_OpencodeWithSession_Ok: opencode agent WITH a captured
+// OpencodeSessionID resumes normally — the unresumable check is gated on empty.
+func TestHandleResumeAgent_OpencodeWithSession_Ok(t *testing.T) {
+	h, s := mustHandler(t)
+	h.dataDir = t.TempDir()
+
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-1", Project: "proj", Section: "task",
+		SessionID: "sess-1", Status: "paused", Backend: "opencode",
+		OpencodeSessionID: "ses_opencode_abc",
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+
+	resp := h.handleResumeAgent(map[string]any{"to": "agent-1"})
+	if resp.Error != "" {
+		t.Fatalf("opencode agent WITH OpencodeSessionID should pass the unresumable check, got: %s", resp.Error)
+	}
+}
+
+// TestSpawnAgentProcess_OpencodeResume_EmptySession_MarksError: the defensive
+// layer in spawnAgentProcess catches direct callers (attemptRestart, etc.)
+// that bypass handleResumeAgent. The agent must be marked error, not spawned
+// with the daemon UUID.
+func TestSpawnAgentProcess_OpencodeResume_EmptySession_MarksError(t *testing.T) {
+	h, s := mustHandler(t)
+	h.dataDir = t.TempDir()
+
+	if err := s.AgentCreate(storage.Agent{
+		ID: "agent-1", Project: "proj", Section: "task",
+		SessionID: "daemon-uuid-36-chars-xxxxxxxxx", Status: "pending", Backend: "opencode",
+		// OpencodeSessionID intentionally empty.
+	}); err != nil {
+		t.Fatalf("AgentCreate: %v", err)
+	}
+
+	// resume=true + backend=opencode + empty OpencodeSessionID → defensive block.
+	h.spawnAgentProcess("agent-1", "daemon-uuid-36-chars-xxxxxxxxx", "proj", "task",
+		"", "/nonexistent/agent-1.sock", t.TempDir(), "opencode", "", 0, true)
+
+	agent, err := s.AgentGet("agent-1")
+	if err != nil || agent == nil {
+		t.Fatalf("AgentGet failed: %v", err)
+	}
+	if agent.Status != "error" {
+		t.Errorf("expected status=error, got %q (progress=%q)", agent.Status, agent.Progress)
+	}
+	if !strings.Contains(agent.Error, opencodeUnresumableMsg) {
+		t.Errorf("error field should contain %q, got %q", opencodeUnresumableMsg, agent.Error)
+	}
+}
+
 // --- Update Agent Status ---
 
 func TestHandleUpdateAgentStatus_RequiresIDOrSession(t *testing.T) {
@@ -1329,6 +1407,9 @@ func TestHandleResumeAgent_OpenCodeNowSupported(t *testing.T) {
 	s.AgentCreate(storage.Agent{
 		ID: "agent-1", Project: "proj", Section: "task",
 		SessionID: "sess-1", Status: "stopped", Backend: "opencode",
+		// OpencodeSessionID is required for resume (L4) — without it the
+		// daemon-UUID fall-back makes opencode exit 1.
+		OpencodeSessionID: "ses_oc_test",
 	})
 
 	resp := h.handleResumeAgent(map[string]any{"to": "agent-1"})

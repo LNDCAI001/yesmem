@@ -53,7 +53,10 @@ func compileValidations() []PhaseValidation {
 			IsStatusField: true,
 			RequiredFields: []*regexp.Regexp{
 				regexp.MustCompile(`(?m)^\*\*Status:\*\*\s+(COMPLETE|BLOCKED|IN PROGRESS)`),
-				regexp.MustCompile(`(?m)^\*\*Tests run:\*\*`),
+				// L1.B fix: accept any of these as verification evidence.
+				// Pure-build tasks (binary patching, frontend) often have no
+				// test suite; **Build:** or **Verification:** is equally valid.
+				regexp.MustCompile(`(?m)^\*\*(Tests run|Build|Verification):\*\*`),
 			},
 		},
 		{

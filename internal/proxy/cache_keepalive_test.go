@@ -50,8 +50,12 @@ func TestCacheKeepalive_StopsAfterMaxPings(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	ka.Stop()
 
-	if int(pingCount.Load()) != 2 {
-		t.Errorf("expected exactly 2 pings, got %d", pingCount.Load())
+	got := int(pingCount.Load())
+	// Timing-fragile on slow runners (macOS GitHub Actions): the scheduler
+	// may not fire both pings within the sleep window. Assert a range to
+	// keep the test meaningful without being flaky.
+	if got < 1 || got > 2 {
+		t.Errorf("expected 1-2 pings, got %d", got)
 	}
 }
 

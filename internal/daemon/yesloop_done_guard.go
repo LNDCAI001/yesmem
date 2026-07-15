@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,11 +66,24 @@ func (h *Handler) checkOneDoneGuardAgent(agent storage.Agent, result ValidationR
 	state, exists := yesloopDoneGuardAgents[agent.ID]
 
 	// Agent fixed the format issue → clear state and stop tracking.
+	// Additionally, if the agent was paused by DONE-GUARD but the scratchpad
+	// became compliant post-pause (e.g. agent continued working, daemon
+	// restart lost in-memory state), unpause it so the status reflects reality.
 	if result.Compliant {
 		if exists {
 			log.Printf("[done-guard] agent %s (%s) now compliant — clearing refire state",
 				agent.ID, agent.Section)
 			delete(yesloopDoneGuardAgents, agent.ID)
+		}
+		if agent.Status == "paused" && strings.HasPrefix(agent.Progress, "paused: DONE-GUARD:") {
+			log.Printf("[done-guard] agent %s (%s) RECOVERED: scratchpad now compliant — unpausing (was: %s)",
+				agent.ID, agent.Section, agent.Progress)
+			yesloopDoneGuardAgentsMu.Unlock()
+			h.unpauseAgent(agent.ID, fmt.Sprintf("scratchpad now compliant (was: %s)", agent.Progress))
+			h.notifyOrchestrator(agent, fmt.Sprintf(
+				"RECOVERED: agent %s (%s) unpaused by DONE-GUARD — scratchpad now compliant (was: %s)",
+				agent.ID, agent.Section, agent.Progress))
+			return
 		}
 		yesloopDoneGuardAgentsMu.Unlock()
 		return

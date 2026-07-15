@@ -337,6 +337,17 @@ func (h *Handler) pauseAgent(id, reason string) {
 	})
 }
 
+// unpauseAgent mirrors pauseAgent: flips status back to running with a
+// recovery note. Only for agents paused by DONE-GUARD whose scratchpad
+// later became compliant — no process spawn, pure DB flip.
+func (h *Handler) unpauseAgent(id, reason string) {
+	h.store.AgentUpdate(id, map[string]any{
+		"status":   "running",
+		"progress": fmt.Sprintf("recovered by DONE-GUARD at %s: %s",
+			time.Now().Format("2006-01-02 15:04:05"), reason),
+	})
+}
+
 // getAgentMaxRuntime returns the configured max runtime for agents.
 func (h *Handler) getAgentMaxRuntime() time.Duration {
 	if h.agentMaxRuntime > 0 {
@@ -595,7 +606,14 @@ func (h *Handler) checkYesloopDoneGuard() {
 		return
 	}
 	for _, agent := range agents {
-		if agent.Status != "running" {
+		if agent.Status != "running" && agent.Status != "paused" {
+			continue
+		}
+		// Paused agents: only revalidate those paused by DONE-GUARD.
+		// Idle and DoneVerify pauses use different progress prefixes
+		// ("paused: yesloop-idle escalation:" / "paused: yesloop-done-verify
+		// escalation:") and must not be touched by this guard.
+		if agent.Status == "paused" && !strings.HasPrefix(agent.Progress, "paused: DONE-GUARD:") {
 			continue
 		}
 		// Only check yesloop agents (section starts with "yesloop-")

@@ -277,6 +277,124 @@ func TestDoneVerify_RelayMessage_MentionsSecurityReview(t *testing.T) {
 	}
 }
 
+// TestDoneVerify_EscalationPayload_HasHint: the DEAD_AGENT notification sent
+// to the orchestrator on done-verify escalation must include the pause-hint
+// so the orchestrator uses relay_agent, not resume_agent (Learning #81175).
+func TestDoneVerify_EscalationPayload_HasHint(t *testing.T) {
+	resetDoneVerifyState()
+	h, s := mustHandler(t)
+
+	makeDoneVerifyAgent(t, h, s, "hint-dv", "sess-hintdv",
+		"### Phase 6: FINISH\n**Status:** COMPLETE\n**Deploy executed:** yes\n**send_to orchestrator:** yes\n")
+
+	// Drive through VERIFY_REQUESTED + 3 refires to escalation.
+	h.checkYesloopDoneVerify()
+	forceRefireReady("hint-dv")
+	h.checkYesloopDoneVerify() // refire 1
+	forceRefireReady("hint-dv")
+	h.checkYesloopDoneVerify() // refire 2
+	forceRefireReady("hint-dv")
+	h.checkYesloopDoneVerify() // refire 3 → escalation
+
+	if !hasDoneVerifyState("hint-dv", yesloopDoneVerifyStateDeadAgentEscalation) {
+		t.Fatal("expected DEAD_AGENT_ESCALATION state")
+	}
+
+	msgs, err := s.GetChannelMessages("caller-hint-dv")
+	if err != nil {
+		t.Fatalf("GetChannelMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one DEAD_AGENT message to caller")
+	}
+	var found bool
+	for _, m := range msgs {
+		if strings.Contains(m.Content, orchestratorPauseHint) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no DEAD_AGENT message contained the pause hint %q", orchestratorPauseHint)
+	}
+}
+
+// --- L6: hasDoneClaim DONE-claim scope (Phase 6 block only) ---
+
+// TestHasDoneClaim_TextInPhase1_NotTriggered: text-based indicators
+// (send_to DONE, ^DONE:) appearing in Phase 1 (e.g. briefing/template text)
+// must NOT trigger hasDoneClaim. This is the L6 false-positive fix (#82125).
+func TestHasDoneClaim_TextInPhase1_NotTriggered(t *testing.T) {
+	// Phase 1 mentions "send_to ... DONE" as part of the briefing — common
+	// pattern when the orchestrator instructs the agent to send_to on DONE.
+	content := "### Phase 1: ANALYZE\n**Status:** IN PROGRESS\n" +
+		"When you are DONE, send send_to(target=\"caller\", content=\"DONE: task complete\")\n" +
+		"Goal understood: do the thing\n"
+	if hasDoneClaim(content) {
+		t.Errorf("send_to DONE in Phase 1 briefing must NOT trigger hasDoneClaim (L6 false-positive)")
+	}
+
+	// ^DONE: as an acknowledgement in Phase 1
+	content2 := "### Phase 1: ANALYZE\n**Status:** IN PROGRESS\n" +
+		"DONE: reading briefing, proceeding to analyze\n"
+	if hasDoneClaim(content2) {
+		t.Errorf("^DONE: in Phase 1 must NOT trigger hasDoneClaim (L6 false-positive)")
+	}
+}
+
+// TestHasDoneClaim_TextInPhase6_Triggered: the same text-based indicators
+// appearing in the Phase 6 block MUST trigger hasDoneClaim — that's where
+// real DONE claims live.
+func TestHasDoneClaim_TextInPhase6_Triggered(t *testing.T) {
+	content := "### Phase 1: ANALYZE\n**Status:** COMPLETE\n**Session id:** ses_x\n" +
+		"### Phase 2: PLAN\n**Status:** COMPLETE\n**Plan stored via set_plan:** yes\n**Files in scope:** x\n" +
+		"### Phase 3: EXECUTE\n**Status:** COMPLETE\n" +
+		"### Phase 4: VERIFY\n**Status:** COMPLETE\n**Build:** ok\n" +
+		"### Phase 5: REVIEW\n**Status:** COMPLETE\n**Stage 2: Cold Review\ntask() dispatched: yes\n**Security:** none\n" +
+		"### Phase 6: FINISH\n**Status:** COMPLETE\nsend_to(target=\"caller\", content=\"DONE: finished\")\n"
+	if !hasDoneClaim(content) {
+		t.Errorf("send_to DONE in Phase 6 block SHOULD trigger hasDoneClaim")
+	}
+
+	content2 := strings.Replace(content,
+		"send_to(target=\"caller\", content=\"DONE: finished\")", "DONE: finished all phases", 1)
+	if !hasDoneClaim(content2) {
+		t.Errorf("^DONE: in Phase 6 block SHOULD trigger hasDoneClaim")
+	}
+}
+
+// TestHasDoneClaim_StructuralIndicators_StillGlobal: the structural
+// indicators (Phase 6 header, Phase 6/6 marker) are checked against full
+// content and trigger regardless of where they appear — they are
+// structural anchors that don't false-positive on body text.
+func TestHasDoneClaim_StructuralIndicators_StillGlobal(t *testing.T) {
+	if !hasDoneClaim("### Phase 6: FINISH\n**Status:** COMPLETE\n") {
+		t.Errorf("Phase 6 header (structural indicator) should trigger hasDoneClaim")
+	}
+	if !hasDoneClaim("Phase 6/6 complete — exiting") {
+		t.Errorf("Phase 6/6 marker (structural indicator) should trigger hasDoneClaim")
+	}
+	if hasDoneClaim("### Phase 1: ANALYZE\n**Status:** IN PROGRESS\nnothing here") {
+		t.Errorf("no indicators present should NOT trigger hasDoneClaim")
+	}
+}
+
+// TestHasDoneClaim_Phase5Text_NotTriggered: text-based indicators in Phase 5
+// (aspirational mentions like "send_to DONE once review complete") do NOT
+// trigger — only Phase 6 block is the source of truth for DONE claims.
+// Per L6 plan decision: Phase 6-only scope.
+func TestHasDoneClaim_Phase5Text_NotTriggered(t *testing.T) {
+	content := "### Phase 1: ANALYZE\n**Status:** COMPLETE\n**Session id:** ses_x\n" +
+		"### Phase 2: PLAN\n**Status:** COMPLETE\n**Plan stored via set_plan:** yes\n**Files in scope:** x\n" +
+		"### Phase 3: EXECUTE\n**Status:** COMPLETE\n" +
+		"### Phase 4: VERIFY\n**Status:** COMPLETE\n**Build:** ok\n" +
+		"### Phase 5: REVIEW\n**Status:** COMPLETE\n**Stage 2: Cold Review\ntask() dispatched: yes\n**Security:** none\n" +
+		"next step: send_to orchestrator DONE once review is complete\n" // Phase 5 mention
+	if hasDoneClaim(content) {
+		t.Errorf("send_to DONE in Phase 5 must NOT trigger hasDoneClaim (Phase 6-only scope)")
+	}
+}
+
 // forceRefireReady backdates lastRelayAt so the next check triggers a re-fire.
 func forceRefireReady(agentID string) {
 	yesloopDoneVerifyAgentsMu.Lock()

@@ -381,6 +381,14 @@ func (h *Handler) attemptRestart() {
 			continue
 		}
 
+		// L4: skip opencode agents whose OpencodeSessionID was never captured.
+		// --resume with the daemon UUID makes opencode exit 1 (Learning #80228).
+		if agent.Backend == "opencode" && agent.OpencodeSessionID == "" {
+			log.Printf("[heartbeat] agent %s has no opencode_session_id, skipping restart (would fall back to daemon UUID)", agent.ID)
+			h.stopAgent(agent.ID, opencodeUnresumableMsg)
+			continue
+		}
+
 		log.Printf("[heartbeat] restarting agent %s (strategy=%s, attempt %d/%d)", agent.ID, agent.RestartStrategy, agent.RestartCount+1, agent.MaxRestarts)
 
 		// GAP3: remove stale sockets
@@ -576,9 +584,11 @@ func (h *Handler) sendOrchestratorStatusPing() {
 }
 
 // checkYesloopDoneGuard validates yesloop agent scratchpad sections for
-// DONE compliance. If an agent claims all 6 phases COMPLETE but the
-// phase blocks fail validation, the agent is paused and the orchestrator
-// notified. Runs every ~30s from startAgentHeartbeat.
+// DONE compliance. If an agent claims all 6 phases COMPLETE but the phase
+// blocks fail validation, the per-agent refire state machine
+// (yesloop_done_guard.go) relays the missing field to the agent and only
+// pauses after doneGuardMaxRefires attempts. Runs every ~30s from
+// startAgentHeartbeat.
 func (h *Handler) checkYesloopDoneGuard() {
 	agents, err := h.store.AgentList("")
 	if err != nil {
@@ -606,31 +616,14 @@ func (h *Handler) checkYesloopDoneGuard() {
 
 		result := ValidatePhaseBlocks(content)
 
-		// Only escalate if all 6 phases are present (agent claims DONE)
-		// but validation fails. Missing phases = still in progress.
+		// Missing phases = still in progress, agent hasn't claimed DONE yet.
 		if len(result.MissingPhases) > 0 {
 			continue
 		}
-		if result.Compliant {
-			continue // all phases valid, nothing to do
-		}
 
-		// DONE claimed but validation failed → pause agent + notify orchestrator
-		log.Printf("[heartbeat] DONE-GUARD: agent %s (%s) claims DONE but phase validation FAILED:\n%s",
-			agent.ID, agent.Section, result.String())
-
-		h.pauseAgent(agent.ID, fmt.Sprintf("DONE-GUARD: phase validation failed — %s", summarizeErrors(result)))
-
-		if agent.CallerSession != "" {
-			h.Handle(Request{
-				Method: "send_to",
-				Params: map[string]any{
-					"target":   agent.CallerSession,
-					"content":  fmt.Sprintf("⛔ DONE-GUARD: Agent %s (%s) claims DONE but phase validation FAILED. Paused.\n%s", agent.ID, agent.Section, result.String()),
-					"msg_type": "status",
-				},
-			})
-		}
+		// All 6 phases present. Delegate refire/pause decision to the state
+		// machine in yesloop_done_guard.go.
+		h.checkOneDoneGuardAgent(agent, result)
 	}
 }
 

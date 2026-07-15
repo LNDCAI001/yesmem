@@ -60,6 +60,33 @@ When you spawn a yesloop agent, the scratchpad task defines the working relation
 
 **Calibration test:** Before writing the scratchpad, ask: "If the agent came back with a plan, would I be surprised?" If yes for the right reasons (better approach), you prescribed right. If yes for wrong reasons (misunderstood goal), add context. If bored (matches what you'd write), over-prescribed — shorten.
 
+## Relay-to-Resume Timing (paused agents)
+
+Relay delivery to a `paused` agent is **asynchronous**: the daemon heartbeats the inject socket at ~1s intervals, the opencode TUI may be mid-turn, and the PTY bridge buffers. A relay is NOT reflected in agent status or scratchpad within seconds.
+
+**Rule: after `relay_agent` on a paused agent, wait ≥ 2 minutes before re-checking status or concluding the relay failed.** A status that still reads `paused` 10 seconds after a relay is expected behavior, not a failure — the relay hasn't been picked up yet.
+
+Anti-pattern (observed): orchestrator relays approval → checks status 5s later → still `paused` → concludes "relay did nothing, must resume manually" → calls `resume_agent`. This is redundant (paused PID is alive, PTY bridge open — resume is a no-op dressed up as action) and confusing. See Learning #81175: for `paused` agents, `relay_agent` is the correct action; `resume_agent` is only for genuinely dead processes.
+
+Correct sequence after relaying to a paused agent:
+1. `relay_agent(to=<id>, content="...")` — approval/instruction delivered
+2. **Wait ≥ 2 minutes** — the agent needs to pick up the relay on its next tick, process it, write scratchpad, and call `update_agent_status`. Shorter windows produce false negatives.
+3. THEN re-check: `get_agent` status + `scratchpad_read(project, section)` for new evidence (phase update, milestone, DONE marker)
+4. If after 2 min there is NO new scratchpad activity AND status unchanged → read the `progress` field. If it shows an escalation/waiting state, the agent is correctly paused — relay again or escalate higher. Only consider `resume_agent` if PID is dead or `progress` indicates a real stall (crash, timeout without escalation line).
+
+## Monitoring discipline (running agents)
+
+Intervention requires stale **activity signals**, not just a stale status label. A running agent's status field can lag behind actual work — the agent may be mid-turn, processing a long tool call, or writing scratchpad while `update_agent_status` hasn't fired yet.
+
+**Rule: only intervene when ALL of these are stale for several minutes:**
+- `last_activity_at` — no new activity timestamp
+- `turns_used` — turn count not advancing
+- `stream_bytes` — SSE stream not producing output
+
+A status label alone is not a trigger. If activity signals are advancing, the agent is working — let it run. The monitoring job (heartbeat) is the next check, not a manual poke.
+
+Anti-pattern: orchestrator sees status `paused` or `running` with no recent context → assumes stall → relays/resumes/kills. This disrupts agents that are mid-work. Check the activity signals first. See Learning #82126.
+
 ## Temp file discipline
 
 NEVER write to `/tmp/` or `~/.claude/yesmem/tmp/` in autonomous operations. `/tmp/` is unreliable across sandbox/container contexts (logs vanish, see #72938). Global paths collide when multiple agents run in parallel.

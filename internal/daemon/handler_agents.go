@@ -19,6 +19,14 @@ import (
 	"github.com/carsteneu/yesmem/internal/storage"
 )
 
+// opencodeUnresumableMsg is the agent-record signal written when an opencode
+// backend agent has no OpencodeSessionID. Resume in that state would fall
+// back to the daemon's 36-char UUID, which opencode rejects with exit 1
+// (Learning #80228). Written to both error (terminal signal at resume time)
+// and progress (live signal at poll-failure time so the orchestrator can see
+// the agent will not be resumable later).
+const opencodeUnresumableMsg = "unresumable: opencode session id never reported"
+
 // handleSpawnAgent creates a DB record and starts the full PTY bridge + terminal.
 // The CLI uses these to create the actual PTY bridge + terminal.
 func (h *Handler) handleSpawnAgent(params map[string]any) Response {
@@ -355,6 +363,23 @@ func buildAgentExtraEnv(backend, sessionID string) []string {
 
 // spawnAgentProcess creates a PTY bridge, opens a terminal, and waits for the agent to finish.
 func (h *Handler) spawnAgentProcess(id, sessionID, project, section, prompt, sockPath, workDir, backend, model string, maxTurns int, resume bool) {
+	// L4 defensive: handleResumeAgent catches this first, but defend direct
+	// callers too. attemptRestart (heartbeat.go) builds its own exec.Command
+	// and is guarded separately. Without this guard the opencode resume
+	// branch falls back to the daemon's 36-char UUID and opencode exits 1
+	// (Learning #80228).
+	if backend == "opencode" && resume {
+		if a, _ := h.store.AgentGet(id); a == nil || a.OpencodeSessionID == "" {
+			log.Printf("[agent_capture] agent %s: blocking opencode resume — no opencode_session_id (would fall back to daemon UUID)", id)
+			h.store.AgentUpdate(id, map[string]any{
+				"status":     "error",
+				"error":      opencodeUnresumableMsg,
+				"stopped_at": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+	}
+
 	var agentBin string
 	var agentArgs []string
 
@@ -522,6 +547,13 @@ func (h *Handler) spawnAgentProcess(id, sessionID, project, section, prompt, soc
 					})
 				} else {
 					log.Printf("[agent_capture] agent %s: opencode_session_id stays empty — whoami will not resolve this agent by backend session", id)
+					// L4: stash the unresumable marker in progress so orchestrators
+					// reading get_agent see the agent cannot be resumed later.
+					// Status stays "running" — the agent can still do work, it just
+					// can't be resumed once it stops.
+					h.store.AgentUpdate(id, map[string]any{
+						"progress": opencodeUnresumableMsg,
+					})
 				}
 			}
 		}()
@@ -838,6 +870,13 @@ func (h *Handler) handleResumeAgent(params map[string]any) Response {
 	}
 	if agent.SessionID == "" {
 		return errorResponse(fmt.Sprintf("agent %s has no session_id to resume", agent.ID))
+	}
+	// L4: opencode resume requires a captured OpencodeSessionID. Without it,
+	// spawnAgentProcess would fall back to the daemon UUID and opencode would
+	// exit 1 (Learning #80228). Reject here with a clear message so the
+	// orchestrator knows to relay_agent instead of retrying resume.
+	if agent.Backend == "opencode" && agent.OpencodeSessionID == "" {
+		return errorResponse(fmt.Sprintf("agent %s is %s", agent.ID, opencodeUnresumableMsg))
 	}
 	if active, err := h.store.AgentGetActiveBySection(agent.Project, agent.Section); err == nil && active != nil && active.ID != agent.ID {
 		return errorResponse(fmt.Sprintf("section %q already has active agent %s (status=%s)", agent.Section, active.ID, active.Status))

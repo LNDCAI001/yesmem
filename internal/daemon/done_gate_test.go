@@ -118,6 +118,59 @@ func TestValidatePhaseBlocks_Agent233_Fails(t *testing.T) {
 	t.Logf("Agent-233 validation:\n%s", result.String())
 }
 
+// --- L1.B: Phase 4 relaxed regex (accepts Tests run OR Build OR Verification) ---
+
+// validV3ContentBuildVariant is validV3Content with Phase 4's **Tests run:**
+// replaced by **Build:** — exercises the relaxed Phase 4 regex.
+var validV3ContentBuildVariant = strings.Replace(validV3Content,
+	"**Tests run:** go test ./internal/daemon/... → exit 0",
+	"**Build:** go build ./... → success", 1)
+
+// validV3ContentVerificationVariant is validV3Content with Phase 4's
+// **Tests run:** replaced by **Verification:** — exercises the relaxed regex.
+var validV3ContentVerificationVariant = strings.Replace(validV3Content,
+	"**Tests run:** go test ./internal/daemon/... → exit 0",
+	"**Verification:** manual smoke test → ok", 1)
+
+// TestValidatePhaseBlocks_BuildOnly_Passes: pure-build tasks have no test
+// suite; **Build:** alone must satisfy Phase 4 verification evidence.
+func TestValidatePhaseBlocks_BuildOnly_Passes(t *testing.T) {
+	result := ValidatePhaseBlocks(validV3ContentBuildVariant)
+	if !result.Compliant {
+		t.Errorf("Phase 4 with **Build:** should pass (relaxed regex), got:\n%s", result.String())
+	}
+}
+
+// TestValidatePhaseBlocks_VerificationOnly_Passes: manual verification
+// evidence must also satisfy Phase 4.
+func TestValidatePhaseBlocks_VerificationOnly_Passes(t *testing.T) {
+	result := ValidatePhaseBlocks(validV3ContentVerificationVariant)
+	if !result.Compliant {
+		t.Errorf("Phase 4 with **Verification:** should pass (relaxed regex), got:\n%s", result.String())
+	}
+}
+
+// TestValidatePhaseBlocks_Phase4NoEvidence_Fails: when Phase 4 has Status
+// but none of Tests run/Build/Verification, validation must still fail.
+// This is the negative case — the regex was relaxed, not removed.
+func TestValidatePhaseBlocks_Phase4NoEvidence_Fails(t *testing.T) {
+	// allPhasesPhase4Invalid (defined in yesloop_done_guard_test.go) has all
+	// 6 phases but Phase 4 lacks any verification-evidence field.
+	result := ValidatePhaseBlocks(allPhasesPhase4Invalid)
+	if result.Compliant {
+		t.Errorf("Phase 4 with no Tests run/Build/Verification should fail")
+	}
+	foundPhase4 := false
+	for _, fe := range result.FieldErrors {
+		if fe.Phase == 4 {
+			foundPhase4 = true
+		}
+	}
+	if !foundPhase4 {
+		t.Errorf("expected a Phase 4 field error, got %v", result.FieldErrors)
+	}
+}
+
 func TestValidatePhaseBlocks_ValidV3_Passes(t *testing.T) {
 	result := ValidatePhaseBlocks(validV3Content)
 	if !result.Compliant {

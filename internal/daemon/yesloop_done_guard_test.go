@@ -250,3 +250,48 @@ func TestBuildDoneGuardRelayMessage_IncludesFieldName(t *testing.T) {
 		t.Errorf("relay message should mention DONE-GUARD so the agent can identify the source, got %q", msg)
 	}
 }
+
+// TestDoneGuard_Revalidates_Paused_Agent_When_Compliant: when an agent was paused
+// by DONE-GUARD but later its scratchpad becomes compliant, the guard must unpause it.
+// Safety gates: status=paused, progress prefix "paused: DONE-GUARD:", result.Compliant=true.
+func TestDoneGuard_Revalidates_Paused_Agent_When_Compliant(t *testing.T) {
+	resetDoneGuardState()
+	h, s := mustHandler(t)
+
+	makeDoneGuardAgent(t, h, s, "dg-recv-1", "sess-dg-recv-1", validV3Content)
+	s.AgentUpdate("dg-recv-1", map[string]any{
+		"status":   "paused",
+		"progress": "paused: DONE-GUARD: phase validation failed — Phase4 missing required field",
+	})
+
+	h.checkYesloopDoneGuard()
+
+	agent, _ := s.AgentGet("dg-recv-1")
+	if agent.Status != "running" {
+		t.Errorf("paused+DONE-GUARD agent with compliant scratchpad should be unpaused, got status=%q", agent.Status)
+	}
+	if !strings.Contains(agent.Progress, "recovered by DONE-GUARD") {
+		t.Errorf("agent progress should indicate recovery, got %q", agent.Progress)
+	}
+}
+
+// TestDoneGuard_DoesNot_Revalidate_Idle_Paused_Agent: agents paused by other guards
+// (Idle, DoneVerify) must not be touched even if scratchpad is compliant.
+// Safety gate #3: progress prefix must be "paused: DONE-GUARD:".
+func TestDoneGuard_DoesNot_Revalidate_Idle_Paused_Agent(t *testing.T) {
+	resetDoneGuardState()
+	h, s := mustHandler(t)
+
+	makeDoneGuardAgent(t, h, s, "dg-recv-2", "sess-dg-recv-2", validV3Content)
+	s.AgentUpdate("dg-recv-2", map[string]any{
+		"status":   "paused",
+		"progress": "paused: yesloop-idle escalation: no PROVEN marker",
+	})
+
+	h.checkYesloopDoneGuard()
+
+	agent, _ := s.AgentGet("dg-recv-2")
+	if agent.Status != "paused" {
+		t.Errorf("agent paused by Idle must NOT be revalidated by DoneGuard, got status=%q", agent.Status)
+	}
+}

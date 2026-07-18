@@ -106,7 +106,7 @@ func TestStateStore_roundTrip(t *testing.T) {
 		t.Fatal("account a should be in cooldown after quota hit")
 	}
 
-	store.RecordSuccess("a")
+	store.RecordSuccess("a", nil)
 	if !store.IsAvailable("a") {
 		t.Fatal("account a should be available after success")
 	}
@@ -161,29 +161,41 @@ func TestStateStore_entitlement403_noDoubleIncrement(t *testing.T) {
 
 // ── RoundRobinSelector ───────────────────────────────────────────────────────
 
-func TestSelector_roundRobin(t *testing.T) {
+func TestSelector_stickyUntilUnavailable(t *testing.T) {
 	t.Parallel()
-	sel := newSelector("a", "b", "c")
+	accounts := []accountpool.AccountRef{{Name: "a"}, {Name: "b"}, {Name: "c"}}
+	sel := accountpool.NewRoundRobinSelector(accounts, 10*time.Minute)
 	ctx := context.Background()
 	meta := accountpool.RequestMeta{}
 
-	names := make([]string, 3)
-	for i := range names {
+	// Sticky: while "a" is available, repeated selection returns "a" every time
+	// (no per-turn rotation — preserves prompt-cache locality).
+	for i := 0; i < 3; i++ {
 		acc, err := sel.Select(ctx, meta)
 		if err != nil {
 			t.Fatalf("Select #%d: %v", i, err)
 		}
-		names[i] = acc.Name
-	}
-	// All three accounts selected, each exactly once.
-	seen := map[string]int{}
-	for _, n := range names {
-		seen[n]++
-	}
-	for _, n := range []string{"a", "b", "c"} {
-		if seen[n] != 1 {
-			t.Errorf("account %q selected %d times, expected 1", n, seen[n])
+		if acc.Name != "a" {
+			t.Fatalf("expected to stick on \"a\" (select #%d), got %q", i, acc.Name)
 		}
+	}
+
+	// "a" hits its cap (429 → cooldown) → the next Select swaps cleanly to "b".
+	sel.MarkResult(accountpool.AccountResult{
+		Account:           accountpool.AccountRef{Name: "a"},
+		ClassifiedFailure: accountpool.FailureQuotaLimited,
+	})
+	acc, err := sel.Select(ctx, meta)
+	if err != nil {
+		t.Fatalf("Select after 429: %v", err)
+	}
+	if acc.Name != "b" {
+		t.Fatalf("expected clean swap to \"b\" after \"a\" hit 429, got %q", acc.Name)
+	}
+
+	// And it now sticks on "b".
+	if acc2, _ := sel.Select(ctx, meta); acc2.Name != "b" {
+		t.Fatalf("expected to stick on \"b\", got %q", acc2.Name)
 	}
 }
 
@@ -261,7 +273,7 @@ func TestPool_nilIsNoop(t *testing.T) {
 		t.Errorf("nil pool ShouldRetry: retry=%v reason=%q", retry, reason)
 	}
 	// RecordSuccess must not panic.
-	p.RecordSuccess(accountpool.AccountRef{})
+	p.RecordSuccess(accountpool.AccountRef{}, nil)
 }
 
 func TestPool_disabledReturnsNil(t *testing.T) {

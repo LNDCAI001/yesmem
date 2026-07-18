@@ -4,17 +4,25 @@ import (
 	"log"
 )
 
-// validateToolPairs scans messages for orphaned tool_result blocks whose
-// tool_use_id has no matching tool_use "id" earlier in the conversation.
-// Returns the repaired messages slice and the count of removed orphans.
-// If no orphans are found, returns the original slice unchanged (zero alloc).
+// validateToolPairs scans messages for BOTH orphan directions and removes them:
+//   - orphaned tool_result blocks whose tool_use_id has no matching tool_use, and
+//   - orphaned tool_use blocks whose id has no matching tool_result.
+//
+// Either direction triggers Anthropic's 400 "tool use concurrency" error, and
+// the collapse/stub/injection pipeline can strand either side (a whole message
+// blanked by collapse can drop a tool_result and leave its tool_use orphaned).
+// The original one-directional guard only caught orphan tool_results, so orphan
+// tool_use slipped through and produced the 400. Returns the repaired slice and
+// the count of removed orphans; unchanged (zero alloc) when none are found.
 func validateToolPairs(messages []any, logger *log.Logger) ([]any, int) {
 	if len(messages) == 0 {
 		return messages, 0
 	}
 
-	// Pass 1: collect all tool_use IDs
+	// Pass 1: collect all tool_use IDs and all tool_result tool_use_ids so both
+	// orphan directions can be detected.
 	toolUseIDs := make(map[string]bool)
+	toolResultIDs := make(map[string]bool)
 	for _, msg := range messages {
 		m, ok := msg.(map[string]any)
 		if !ok {
@@ -29,9 +37,14 @@ func validateToolPairs(messages []any, logger *log.Logger) ([]any, int) {
 			if !ok {
 				continue
 			}
-			if b["type"] == "tool_use" {
+			switch b["type"] {
+			case "tool_use":
 				if id, ok := b["id"].(string); ok {
 					toolUseIDs[id] = true
+				}
+			case "tool_result":
+				if id, ok := b["tool_use_id"].(string); ok {
+					toolResultIDs[id] = true
 				}
 			}
 		}
@@ -74,6 +87,18 @@ func validateToolPairs(messages []any, logger *log.Logger) ([]any, int) {
 					}
 				}
 			}
+			if b["type"] == "tool_use" {
+				if id, ok := b["id"].(string); ok {
+					if !toolResultIDs[id] {
+						removed++
+						orphanCount++
+						if logger != nil {
+							logger.Printf("[validate] removed orphan tool_use (id=%s) — this is the fix for 400 tool-use-concurrency", id)
+						}
+						continue
+					}
+				}
+			}
 			cleaned = append(cleaned, block)
 		}
 
@@ -83,7 +108,8 @@ func validateToolPairs(messages []any, logger *log.Logger) ([]any, int) {
 		}
 
 		if len(cleaned) == 0 {
-			// Entire message was orphan tool_results — drop message
+			// Entire message was orphan tool blocks (results or uses) — drop it;
+			// fixAlternation then repairs any role-alternation gap this leaves.
 			continue
 		}
 

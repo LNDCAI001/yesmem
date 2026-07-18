@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/user"
 	"strings"
+	"time"
 
-	"github.com/carsteneu/yesmem/internal/proxy"
+	"github.com/LNDCAI001/yesmem/internal/proxy"
 )
 
 // statuslineInput is the JSON structure Claude Code sends to the statusline command.
@@ -132,12 +134,70 @@ func runStatusline() {
 
 	}
 
+	// SMM account pool status + per-account 5h/7d usage. Empty when the proxy
+	// is not running (e.g. bare Windows sessions) or SMM is disabled.
+	if line := renderAccountPool(); line != "" {
+		sb.WriteString(line)
+	}
+
 	if input.SessionID != "" {
 		sb.WriteString(fmt.Sprintf("\n%sSessionId: %s%s", cCyan, input.SessionID, cReset))
 	}
 
 	output := sb.String()
 	fmt.Print(output)
+}
+
+// accountsResp is the subset of the proxy /accounts JSON the statusline renders.
+type accountsResp struct {
+	Enabled  bool `json:"enabled"`
+	Accounts []struct {
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		Available  bool   `json:"available"`
+		RateLimits struct {
+			Unified5hUtil *float64 `json:"unified_5h_utilization_pct"`
+			Unified7dUtil *float64 `json:"unified_7d_utilization_pct"`
+		} `json:"rate_limits"`
+	} `json:"accounts"`
+}
+
+// renderAccountPool fetches the SMM pool status from the local proxy and
+// renders a compact one-line summary: each account's name, effective status
+// (color-coded), and remaining 5h/7d budget. Returns "" if the proxy is
+// unreachable or SMM is disabled, so non-proxied sessions show nothing.
+func renderAccountPool() string {
+	client := &http.Client{Timeout: 400 * time.Millisecond}
+	resp, err := client.Get("http://127.0.0.1:9099/accounts")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var ar accountsResp
+	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil || !ar.Enabled || len(ar.Accounts) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(ar.Accounts))
+	for _, a := range ar.Accounts {
+		color := cBoldRed // hard_failed / disabled / unknown
+		switch a.Status {
+		case "available":
+			color = cBoldGrn
+		case "cooldown", "scheduled_off":
+			color = cBoldYel
+		}
+		usage := ""
+		if a.RateLimits.Unified5hUtil != nil {
+			usage += fmt.Sprintf(" %.0f%%/5h", *a.RateLimits.Unified5hUtil)
+		}
+		if a.RateLimits.Unified7dUtil != nil {
+			usage += fmt.Sprintf(" %.0f%%/7d", *a.RateLimits.Unified7dUtil)
+		}
+		parts = append(parts, fmt.Sprintf("%s%s:%s%s%s", color, a.Name, a.Status, usage, cReset))
+	}
+	return fmt.Sprintf("\n %sSMM%s %s", cCyan, cReset, strings.Join(parts, "  "))
 }
 
 func formatTTL(statusPath string, tokK int, coldCost float64) (string, string) {

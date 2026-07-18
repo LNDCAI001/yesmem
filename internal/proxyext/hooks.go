@@ -121,6 +121,22 @@ func ActivePoolAccounts() []accountpool.AccountView {
 	return nil
 }
 
+// ActivePoolSetEnabled enables/disables a pool account by name at runtime.
+// Returns false if SMM is disabled, no pool exists, or the name is unknown.
+// Used by the proxy /accounts/enable and /accounts/disable endpoints.
+func ActivePoolSetEnabled(name string, enabled bool) bool {
+	hooksMu.RLock()
+	h := activeHooks
+	hooksMu.RUnlock()
+	if h == nil {
+		return false
+	}
+	if sh, ok := h.(*smmHooks); ok && sh.pool != nil {
+		return sh.pool.SetAccountEnabled(name, enabled)
+	}
+	return false
+}
+
 // ActiveSMMConfig returns the SMMConfig passed to Init. Returns nil if Init
 // has not been called.
 func ActiveSMMConfig() *SMMConfig {

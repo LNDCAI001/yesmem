@@ -185,6 +185,8 @@ type AccountView struct {
 	Name              string `json:"name"`
 	CredentialDir     string `json:"credential_dir"`
 	Status            string `json:"status"`
+	Disabled          bool   `json:"disabled"`
+	Available         bool   `json:"available"`
 	ConsecutiveFails  int    `json:"consecutive_fails"`
 	LastSelectedAt    string `json:"last_selected_at,omitempty"`
 	LastSuccessAt     string `json:"last_success_at,omitempty"`
@@ -222,13 +224,31 @@ func (p *Pool) Accounts() []AccountView {
 		return nil
 	}
 	views := make([]AccountView, 0, len(p.cfg.Accounts))
+	now := time.Now()
 	for _, acc := range p.cfg.Accounts {
 		st, _ := p.sel.snapshot(acc.Name)
 		rl := st.RateLimits
+
+		// Effective status/availability, computed read-only (no state mutation
+		// so rendering the /accounts view never triggers a recovery probe).
+		scheduledOff := !withinActiveWindow(acc, now)
+		statusStr := st.Status.String()
+		switch {
+		case st.Disabled:
+			statusStr = "disabled"
+		case scheduledOff:
+			statusStr = "scheduled_off"
+		}
+		available := !st.Disabled && !scheduledOff &&
+			st.Status != StatusHardFailed &&
+			!(st.Status == StatusCooldown && now.Before(st.CooldownUntil))
+
 		views = append(views, AccountView{
 			Name:          acc.Name,
 			CredentialDir: acc.CredentialDir,
-			Status:        st.Status.String(),
+			Status:        statusStr,
+			Disabled:      st.Disabled,
+			Available:     available,
 			ConsecutiveFails: st.ConsecutiveFails,
 			LastSelectedAt: isoOrNever(st.LastSelectedAt),
 			LastSuccessAt:  isoOrNever(st.LastSuccessAt),
@@ -249,9 +269,20 @@ func (a AccountStatus) String() string {
 		return "cooldown"
 	case StatusHardFailed:
 		return "hard_failed"
+	case StatusDisabled:
+		return "disabled"
 	default:
 		return "unknown"
 	}
+}
+
+// SetAccountEnabled enables or disables an account by name at runtime.
+// Returns false for a nil pool or an unknown account name.
+func (p *Pool) SetAccountEnabled(name string, enabled bool) bool {
+	if p == nil {
+		return false
+	}
+	return p.sel.store.SetEnabled(name, enabled)
 }
 
 // ShouldRetry inspects a pre-stream HTTP status code and returns whether the

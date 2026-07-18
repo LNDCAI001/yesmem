@@ -25,7 +25,15 @@ func NewRoundRobinSelector(accounts []AccountRef, cooldownAfterQuota time.Durati
 	}
 }
 
-// Select chooses the next available account in round-robin order.
+// Select returns an available account, preferring to STICK with the currently
+// active one across turns for prompt-cache locality. It advances to the next
+// account only when the current one becomes unavailable — a 429 cooldown, a
+// hard-fail, a manual disable, or being outside its scheduled active window.
+//
+// This is deliberately NOT per-turn round-robin: rotating accounts every request
+// thrashes the Anthropic prompt cache (each account has its own cache) and burns
+// budget. Instead a session stays on one account and swaps cleanly only when that
+// account hits a real limit or is turned off.
 // Returns an error only when all accounts are unavailable.
 func (r *RoundRobinSelector) Select(_ context.Context, _ RequestMeta) (AccountRef, error) {
 	r.mu.Lock()
@@ -36,7 +44,7 @@ func (r *RoundRobinSelector) Select(_ context.Context, _ RequestMeta) (AccountRe
 		idx := (r.current + i) % n
 		acc := r.accounts[idx]
 		if r.store.IsAvailable(acc.Name) {
-			r.current = (idx + 1) % n
+			r.current = idx // stick here until this account becomes unavailable
 			return acc, nil
 		}
 	}

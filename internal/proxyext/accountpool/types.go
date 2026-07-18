@@ -14,12 +14,24 @@ type AccountRef struct {
 	Name          string
 	CredentialDir string
 	Priority      int
+	// ActiveTZ, ActiveStartHour and ActiveEndHour define an optional daily
+	// active window in the account's local timezone (IANA name, e.g.
+	// "Asia/Seoul"). Empty ActiveTZ means "always active" (no schedule).
+	// The window is [start,end) in 24h local hours and supports wrap-around
+	// (e.g. start=21,end=6 = active 21:00 through 06:00).
+	ActiveTZ        string
+	ActiveStartHour int
+	ActiveEndHour   int
+	// Disabled starts the account disabled at load time (config `disabled: true`).
+	// Runtime toggles via the /accounts endpoints override this per process.
+	Disabled bool
 }
 
 // AccountState tracks runtime health per account.
 type AccountState struct {
 	Ref              AccountRef
 	Status           AccountStatus
+	Disabled         bool // manual runtime disable (via /accounts endpoint or config); orthogonal to health
 	CooldownUntil    time.Time
 	LastSelectedAt   time.Time
 	LastSuccessAt    time.Time
@@ -36,6 +48,7 @@ const (
 	StatusAvailable AccountStatus = iota
 	StatusCooldown
 	StatusHardFailed
+	StatusDisabled  // manually disabled or outside its scheduled active window
 )
 
 // TokenResult holds a resolved access token and optional metadata.

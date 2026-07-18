@@ -142,3 +142,113 @@ func TestValidateToolPairs_MixedValidAndOrphan(t *testing.T) {
 		t.Errorf("expected tu_valid to survive, got %v", block["tool_use_id"])
 	}
 }
+
+// countSurvivingToolUses walks the repaired messages and returns how many tool_use
+// blocks survive — used to assert orphan tool_use removal.
+func countSurvivingToolUses(messages []any) int {
+	n := 0
+	for _, msg := range messages {
+		m, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := m["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, block := range content {
+			if b, ok := block.(map[string]any); ok && b["type"] == "tool_use" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// TestValidateToolPairs_OrphanToolUse is the direct regression test for the
+// 400 "tool use concurrency" fix: an assistant tool_use with no matching
+// tool_result (e.g. its result was dropped by collapse) must be removed.
+func TestValidateToolPairs_OrphanToolUse(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "user", "content": "hello"},
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "tu_orphan", "name": "read"},
+		}},
+		map[string]any{"role": "user", "content": "next question"},
+	}
+
+	result, orphans := validateToolPairs(messages, nil)
+	if orphans != 1 {
+		t.Fatalf("expected 1 orphan tool_use removed, got %d", orphans)
+	}
+	if got := countSurvivingToolUses(result); got != 0 {
+		t.Fatalf("expected orphan tool_use gone, still have %d", got)
+	}
+}
+
+// TestValidateToolPairs_OrphanToolUseKeepsText verifies only the orphan
+// tool_use is stripped, leaving sibling text in the same message intact.
+func TestValidateToolPairs_OrphanToolUseKeepsText(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "user", "content": "hi"},
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "text", "text": "let me check"},
+			map[string]any{"type": "tool_use", "id": "tu_orphan", "name": "bash"},
+		}},
+		map[string]any{"role": "user", "content": "ok"},
+	}
+
+	result, orphans := validateToolPairs(messages, nil)
+	if orphans != 1 {
+		t.Fatalf("expected 1 orphan, got %d", orphans)
+	}
+	msg := result[1].(map[string]any)
+	content := msg["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["type"] != "text" {
+		t.Fatalf("expected only the text block to survive, got %v", content)
+	}
+}
+
+// TestValidateToolPairs_ValidPairSurvives is a regression guard: a tool_use
+// WITH its matching tool_result must never be treated as an orphan.
+func TestValidateToolPairs_ValidPairSurvives(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "tu_1", "name": "read"},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
+		}},
+	}
+
+	result, orphans := validateToolPairs(messages, nil)
+	if orphans != 0 {
+		t.Fatalf("valid tool_use/tool_result pair must not be removed, got %d orphans", orphans)
+	}
+	if got := countSurvivingToolUses(result); got != 1 {
+		t.Fatalf("expected the paired tool_use to survive, got %d", got)
+	}
+}
+
+// TestValidateToolPairs_BothDirections removes an orphan tool_use and an orphan
+// tool_result in one request while preserving the fully-paired pair.
+func TestValidateToolPairs_BothDirections(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "tu_paired", "name": "read"},
+			map[string]any{"type": "tool_use", "id": "tu_orphanuse", "name": "read"},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "tu_paired", "content": "ok"},
+			map[string]any{"type": "tool_result", "tool_use_id": "tu_orphanres", "content": "nope"},
+		}},
+	}
+
+	result, orphans := validateToolPairs(messages, nil)
+	if orphans != 2 {
+		t.Fatalf("expected 2 orphans (1 use + 1 result), got %d", orphans)
+	}
+	if got := countSurvivingToolUses(result); got != 1 {
+		t.Fatalf("expected only the paired tool_use to survive, got %d", got)
+	}
+}

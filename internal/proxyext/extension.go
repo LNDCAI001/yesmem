@@ -39,6 +39,14 @@ type AccountPoolAccountCfg struct {
 	Name          string `yaml:"name"`
 	CredentialDir string `yaml:"credential_dir"`
 	Priority      int    `yaml:"priority"`
+	// Disabled starts this account out of rotation (toggle live via /accounts).
+	Disabled bool `yaml:"disabled"`
+	// Optional daily active window in ActiveTZ (IANA, e.g. "Asia/Seoul").
+	// Empty tz = always active. Window is [start,end) local hours, wrap-around
+	// supported (start>end spans midnight).
+	ActiveTZ        string `yaml:"active_tz"`
+	ActiveStartHour int    `yaml:"active_start_hour"`
+	ActiveEndHour   int    `yaml:"active_end_hour"`
 }
 
 // StaticPlanCfg mirrors the `smm.static_plan` YAML block.
@@ -79,9 +87,13 @@ func NewSMMHooks(cfg SMMConfig, logger *log.Logger) (Hooks, error) {
 		}
 		for _, a := range cfg.AccountPool.Accounts {
 			poolCfg.Accounts = append(poolCfg.Accounts, accountpool.AccountRef{
-				Name:          a.Name,
-				CredentialDir: a.CredentialDir,
-				Priority:      a.Priority,
+				Name:            a.Name,
+				CredentialDir:   a.CredentialDir,
+				Priority:        a.Priority,
+				Disabled:        a.Disabled,
+				ActiveTZ:        a.ActiveTZ,
+				ActiveStartHour: a.ActiveStartHour,
+				ActiveEndHour:   a.ActiveEndHour,
 			})
 		}
 		var err error

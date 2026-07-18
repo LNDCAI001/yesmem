@@ -65,3 +65,29 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
+
+// handleAccountToggle returns a handler that enables (enable=true) or disables
+// (enable=false) a pool account at runtime. Usage:
+//
+//	GET/POST /accounts/enable?name=cdaniel
+//	GET/POST /accounts/disable?name=cdaisy
+//
+// Disabling removes the account from rotation immediately; enabling clears the
+// disable flag and resets its health so it can be selected again.
+func (s *Server) handleAccountToggle(enable bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "missing ?name="})
+			return
+		}
+		if !proxyext.ActivePoolSetEnabled(name, enable) {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "unknown account or pool disabled", "name": name})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "name": name, "enabled": enable})
+	}
+}

@@ -94,7 +94,7 @@ func NewStateStore(accounts []AccountRef) *StateStore {
 	}
 	for _, a := range accounts {
 		a := a
-		s.states[a.Name] = &AccountState{Ref: a, Status: StatusAvailable}
+		s.states[a.Name] = &AccountState{Ref: a, Status: StatusAvailable, Disabled: a.Disabled}
 	}
 	return s
 }
@@ -110,7 +110,18 @@ func (s *StateStore) Get(name string) (AccountState, bool) {
 	return *st, true
 }
 
-// IsAvailable reports whether the named account is not in cooldown and not hard-failed.
+// hardFailRecovery is how long an account stays hard-failed before the pool
+// re-probes it once. Without this, a transient auth failure (e.g. an OAuth
+// token that expired during a long session because no host-side Claude process
+// refreshed it) benches the account until a daemon restart — permanently
+// locking the pool even after the token is refreshed on the host. Tunable;
+// 15m balances fast recovery against retry noise.
+const hardFailRecovery = 15 * time.Minute
+
+// IsAvailable reports whether the named account is selectable right now.
+// Both non-available states self-heal: cooldown restores on expiry, and
+// hard-fail is re-probed once after hardFailRecovery (a fresh 401 re-benches
+// it since ConsecutiveFails is still over threshold; a success clears it).
 func (s *StateStore) IsAvailable(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,8 +129,23 @@ func (s *StateStore) IsAvailable(name string) bool {
 	if !ok {
 		return false
 	}
-	if st.Status == StatusHardFailed {
+	// Manual disable (via /accounts endpoint or config) and time-of-day
+	// scheduling both take precedence over health state.
+	if st.Disabled {
 		return false
+	}
+	if !withinActiveWindow(st.Ref, time.Now()) {
+		return false
+	}
+	if st.Status == StatusHardFailed {
+		if time.Since(st.LastAuthErrorAt) < hardFailRecovery {
+			return false
+		}
+		// Recovery window elapsed — allow a single probe by restoring to
+		// available. The token may have been refreshed on the host since the
+		// account failed. If it 401s again, RecordAuthError re-hard-fails and
+		// resets the window; on success RecordSuccess clears the failure count.
+		st.Status = StatusAvailable
 	}
 	if st.Status == StatusCooldown && time.Now().Before(st.CooldownUntil) {
 		return false
@@ -129,6 +155,47 @@ func (s *StateStore) IsAvailable(name string) bool {
 		st.Status = StatusAvailable
 	}
 	return true
+}
+
+// SetEnabled manually enables or disables an account at runtime. Disabling
+// removes it from selection immediately; enabling clears the disable flag and
+// resets health (status + consecutive fails) so it can be tried right away.
+// Returns false for an unknown account name.
+func (s *StateStore) SetEnabled(name string, enabled bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.states[name]
+	if !ok {
+		return false
+	}
+	st.Disabled = !enabled
+	if enabled {
+		st.Status = StatusAvailable
+		st.ConsecutiveFails = 0
+	}
+	return true
+}
+
+// withinActiveWindow reports whether now falls inside the account's scheduled
+// active window. Empty ActiveTZ (or start==end) means "always active". The
+// window is [ActiveStartHour, ActiveEndHour) in the account's local time and
+// supports wrap-around (start > end spans midnight, e.g. 21..6). An
+// unparseable timezone fails open so a config typo never silently benches an
+// account.
+func withinActiveWindow(ref AccountRef, now time.Time) bool {
+	if ref.ActiveTZ == "" || ref.ActiveStartHour == ref.ActiveEndHour {
+		return true
+	}
+	loc, err := time.LoadLocation(ref.ActiveTZ)
+	if err != nil {
+		return true
+	}
+	h := now.In(loc).Hour()
+	start, end := ref.ActiveStartHour, ref.ActiveEndHour
+	if start < end {
+		return h >= start && h < end
+	}
+	return h >= start || h < end
 }
 
 // RecordSuccess marks the account healthy and resets consecutive failure count.

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
 )
 
 // mcpErrorLog writes structured error entries to mcp-error.log.
@@ -202,7 +202,15 @@ func startDaemon(dataDir string) error {
 	home, _ := os.UserHomeDir()
 	projectsDir := filepath.Join(home, ".claude", "projects")
 
-	cmd := exec.Command(exe, "daemon", "--replace")
+	// Plain "daemon" (NOT "--replace"): New() only reaches startDaemon after a
+	// ping to the existing daemon failed. That failure is often a false negative
+	// (the daemon is alive but the ping timed out under WSL load, or two MCP
+	// starts raced). "--replace" would then KILL the healthy daemon and wipe all
+	// in-memory state (SMM account pool + sawtooth counters) — the root of the
+	// 2–10 min restart loop. Plain "daemon" refuses when one is already running,
+	// and the dialWithTimeout below reconnects to the survivor. A genuine zombie
+	// (process alive, socket dead) is the rare tradeoff: recover via "yesmem restart".
+	cmd := exec.Command(exe, "daemon")
 	cmd.Env = append(os.Environ(),
 		"YESMEM_DATA_DIR="+dataDir,
 		"YESMEM_PROJECTS_DIR="+projectsDir,

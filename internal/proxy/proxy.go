@@ -1247,15 +1247,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			freshTokens := s.countMessageTokens(freshMessages)
 			combinedTokens := frozen.Tokens + freshTokens + overhead
 
-			if shouldInvalidateFrozen(combinedTokens, s.effectiveTokenThreshold(model)) {
-				// Fresh tail grew too large — invalidate and re-stub.
-				// Decide on combinedTokens (honest: frozen prefix + fresh tail +
-				// overhead), NOT totalTokens. After a freeze the stubbed request makes
-				// Anthropic report a small input_tokens, so estimateTotalTokens
-				// (lastActual + delta) stays below threshold forever — the frozen prefix
-				// would never expire and sawtooth would fire exactly once per thread.
-				s.logger.Printf("[req %d %s tid=%s] SAWTOOTH: frozen prefix expired (combined=%dk > %dk threshold: %dk frozen + %dk fresh + %dk overhead)",
-					reqIdx, proj, threadID, combinedTokens/1000, s.effectiveTokenThreshold(model)/1000, frozen.Tokens/1000, freshTokens/1000, overhead/1000)
+			if shouldInvalidateFrozen(totalTokens, s.effectiveTokenThreshold(model)) {
+				// Fresh tail grew too large — invalidate and re-stub
+				s.logger.Printf("[req %d %s tid=%s] SAWTOOTH: frozen prefix expired (totalTokens=%dk > %dk threshold, combined=%dk: %dk frozen + %dk fresh + %dk overhead)",
+					reqIdx, proj, threadID, totalTokens/1000, s.effectiveTokenThreshold(model)/1000, combinedTokens/1000, frozen.Tokens/1000, freshTokens/1000, overhead/1000)
 				s.invalidateThreadCaches(threadID, proj, extractWorkingDirectory(req))
 				frozen = nil // fall through to trigger check below
 			} else {

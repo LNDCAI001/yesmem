@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/extraction"
-	"github.com/carsteneu/yesmem/internal/ingest"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/ingest"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 var embedDocChunksMu sync.Mutex

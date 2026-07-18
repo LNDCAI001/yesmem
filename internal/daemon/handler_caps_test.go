@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 func seedCap(t *testing.T, h *Handler, name, project, handlerBash string, tags []string) int64 {

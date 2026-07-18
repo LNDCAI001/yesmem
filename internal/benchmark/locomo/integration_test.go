@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/benchmark"
+	"github.com/LNDCAI001/yesmem/internal/benchmark"
 )
 
 // mockLLMFunc implements benchmark.LLMClient with a custom function.

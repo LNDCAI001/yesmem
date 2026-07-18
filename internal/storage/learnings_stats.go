@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // StatsFilter holds optional time range and project filters for stats queries.

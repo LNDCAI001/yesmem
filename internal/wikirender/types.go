@@ -3,8 +3,8 @@ package wikirender
 import (
 	"fmt"
 
-	"github.com/carsteneu/yesmem/internal/codescan"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/codescan"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 type RenderConfig struct {

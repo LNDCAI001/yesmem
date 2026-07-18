@@ -7,9 +7,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/capblob"
-	"github.com/carsteneu/yesmem/internal/daemon"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/capblob"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // rpcStore satisfies capblob.Store by routing every call through the daemon's

@@ -16,7 +16,7 @@ func makeAccountsAlt() []accountpool.AccountRef {
 
 func TestStateStoreAvailableAfterSuccess(t *testing.T) {
 	store := accountpool.NewStateStore(makeAccountsAlt())
-	store.RecordSuccess("acct1")
+	store.RecordSuccess("acct1", nil)
 	if !store.IsAvailable("acct1") {
 		t.Fatal("should be available after success")
 	}

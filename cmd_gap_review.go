@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/config"
-	"github.com/carsteneu/yesmem/internal/daemon"
-	"github.com/carsteneu/yesmem/internal/extraction"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 const gapReviewSystemPrompt = `You review Knowledge Gaps from an AI assistant memory system.

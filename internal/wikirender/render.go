@@ -395,7 +395,7 @@ func packageFromPath(path string) string {
 }
 
 func trimModulePrefix(pkg string) string {
-	pkg = strings.TrimPrefix(pkg, "github.com/carsteneu/yesmem/")
+	pkg = strings.TrimPrefix(pkg, "github.com/LNDCAI001/yesmem/")
 	return pkg
 }
 

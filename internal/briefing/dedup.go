@@ -6,7 +6,7 @@ import (
 	"unicode"
 
 	"github.com/bbalet/stopwords"
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // Deduplicate removes near-duplicate learnings using hybrid similarity

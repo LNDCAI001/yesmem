@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/config"
 )
 
 func TestEmbeddingCacheModelKey_Nil(t *testing.T) {

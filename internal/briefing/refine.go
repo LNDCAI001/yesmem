@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/extraction"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 const refinementSystemPrompt = `Du bist der Briefing-Autor für YesMem — ein Memory-System das einem Claude-Agenten Kontinuität über Sessions hinweg gibt.

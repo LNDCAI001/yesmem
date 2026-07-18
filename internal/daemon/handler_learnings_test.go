@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 func TestHandleRememberStoresExplicitModel(t *testing.T) {

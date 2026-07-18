@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // Status prints the current index status.

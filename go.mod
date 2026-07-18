@@ -1,4 +1,4 @@
-module github.com/carsteneu/yesmem
+module github.com/LNDCAI001/yesmem
 
 go 1.25.0
 
@@ -7,6 +7,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/creack/pty/v2 v2.0.1
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/itchyny/gojq v0.12.19
 	github.com/mark3labs/mcp-go v0.47.1
 	github.com/qhenkart/anthropic-tokenizer-go v0.0.0-20231011194518-5519949e0faf
 	github.com/yuin/goldmark v1.8.2
@@ -22,7 +23,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/itchyny/gojq v0.12.19 // indirect
 	github.com/itchyny/timefmt-go v0.1.8 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
@@ -40,3 +40,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/carsteneu/yesmem => ./

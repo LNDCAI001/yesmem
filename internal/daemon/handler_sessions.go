@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 func (h *Handler) handleGetSession(params map[string]any) Response {

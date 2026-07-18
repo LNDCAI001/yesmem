@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // ExportData is the top-level JSON structure for export/import.

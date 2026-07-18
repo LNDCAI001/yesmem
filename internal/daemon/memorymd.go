@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/briefing"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/briefing"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 const yesmemMarker = "# --- YesMem Auto-Generated (do not edit below) ---"

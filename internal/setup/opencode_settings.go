@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	opencodepkg "github.com/carsteneu/yesmem/internal/opencode"
+	opencodepkg "github.com/LNDCAI001/yesmem/internal/opencode"
 )
 
 func defaultOpencodeSettings() map[string]any {

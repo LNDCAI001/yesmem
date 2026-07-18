@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/config"
 )
 
 // BinaryPath returns the path to the currently running yesmem binary.

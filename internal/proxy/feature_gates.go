@@ -3,7 +3,7 @@ package proxy
 import (
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/config"
 )
 
 // isFeatureEnabled checks whether a behavioral feature is active for a given model.

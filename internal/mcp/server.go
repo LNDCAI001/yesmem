@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/buildinfo"
+	"github.com/LNDCAI001/yesmem/internal/buildinfo"
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )

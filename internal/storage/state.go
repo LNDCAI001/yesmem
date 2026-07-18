@@ -3,7 +3,7 @@ package storage
 import (
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // GetIndexState returns the index state for a JSONL path, or nil if not indexed.

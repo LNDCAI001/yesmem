@@ -9,7 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/carsteneu/yesmem/internal/benchmark"
+	"github.com/LNDCAI001/yesmem/internal/benchmark"
 )
 
 // QueryResult holds the output of querying the memory system for one QA pair.

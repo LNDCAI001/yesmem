@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // Plan represents an active plan for a thread/session.

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // PersonaSynthesisSystemPrompt is the system prompt for generating persona directives.

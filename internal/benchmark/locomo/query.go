@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/carsteneu/yesmem/internal/benchmark"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/benchmark"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // SearchResult holds a single search hit from the memory system.

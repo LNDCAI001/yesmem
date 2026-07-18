@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
 )
 
 // DaemonClient connects to the running YesMem daemon via Unix socket

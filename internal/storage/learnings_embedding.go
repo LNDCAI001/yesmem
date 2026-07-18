@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
-	"github.com/carsteneu/yesmem/internal/textutil"
+	"github.com/LNDCAI001/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/textutil"
 )
 
 func isEmbeddableLearning(category string) bool {

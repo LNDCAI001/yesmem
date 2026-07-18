@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
 	"golang.org/x/term"
 )
 

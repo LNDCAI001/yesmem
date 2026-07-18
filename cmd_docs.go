@@ -8,10 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/carsteneu/yesmem/internal/config"
-	"github.com/carsteneu/yesmem/internal/extraction"
-	"github.com/carsteneu/yesmem/internal/ingest"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/ingest"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 func runAddDocs(args []string) {

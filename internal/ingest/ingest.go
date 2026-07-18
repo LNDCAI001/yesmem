@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/extraction"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // Config holds the ingest pipeline configuration.

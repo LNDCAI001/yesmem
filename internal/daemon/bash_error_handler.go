@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // Auto-correct rate limiting (T4): bash-job auto-correct is rate-limited so

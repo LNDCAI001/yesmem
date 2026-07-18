@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/codescan"
+	"github.com/LNDCAI001/yesmem/internal/codescan"
 )
 
 // HealthData holds counts for the health section of the briefing.

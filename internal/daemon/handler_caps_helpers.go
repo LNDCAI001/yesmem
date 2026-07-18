@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/capfile"
+	"github.com/LNDCAI001/yesmem/internal/capfile"
 )
 
 // parseScriptsParam decodes the `scripts` param of save_cap into validated

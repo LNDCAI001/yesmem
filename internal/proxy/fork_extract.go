@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/briefing"
+	"github.com/LNDCAI001/yesmem/internal/briefing"
 )
 
 // ExtractionResult holds the parsed output from the extract_and_evaluate fork.

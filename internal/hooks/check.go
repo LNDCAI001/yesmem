@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/config"
-	"github.com/carsteneu/yesmem/internal/hints"
-	"github.com/carsteneu/yesmem/internal/models"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/hints"
+	"github.com/LNDCAI001/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // HookInput represents the JSON Claude Code sends on stdin for hook events.

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/archive"
-	"github.com/carsteneu/yesmem/internal/bloom"
-	"github.com/carsteneu/yesmem/internal/models"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/archive"
+	"github.com/LNDCAI001/yesmem/internal/bloom"
+	"github.com/LNDCAI001/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 func setupIndexer(t *testing.T) (*Indexer, *storage.Store) {

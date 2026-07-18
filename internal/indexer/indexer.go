@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/archive"
-	"github.com/carsteneu/yesmem/internal/bloom"
-	"github.com/carsteneu/yesmem/internal/models"
-	"github.com/carsteneu/yesmem/internal/parser"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/archive"
+	"github.com/LNDCAI001/yesmem/internal/bloom"
+	"github.com/LNDCAI001/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/parser"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // Indexer orchestrates the full indexing pipeline.

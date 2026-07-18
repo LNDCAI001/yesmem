@@ -13,18 +13,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/caps"
-	yesmemPlugins "github.com/carsteneu/yesmem/plugins"
-	"github.com/carsteneu/yesmem/skills"
+	"github.com/LNDCAI001/yesmem/caps"
+	yesmemPlugins "github.com/LNDCAI001/yesmem/plugins"
+	"github.com/LNDCAI001/yesmem/skills"
 	"gopkg.in/yaml.v3"
 
-	"github.com/carsteneu/yesmem/internal/orchestrator"
+	"github.com/LNDCAI001/yesmem/internal/orchestrator"
 
-	"github.com/carsteneu/yesmem/internal/buildinfo"
-	"github.com/carsteneu/yesmem/internal/briefing"
-	"github.com/carsteneu/yesmem/internal/config"
-	"github.com/carsteneu/yesmem/internal/daemon"
-	"github.com/carsteneu/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/buildinfo"
+	"github.com/LNDCAI001/yesmem/internal/briefing"
+	"github.com/LNDCAI001/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
 )
 
 // Run executes the install. Non-interactive by default (uses sensible defaults).

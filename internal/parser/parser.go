@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // SessionMeta holds metadata extracted from a session JSONL file.

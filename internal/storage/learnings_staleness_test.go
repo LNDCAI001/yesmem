@@ -3,7 +3,7 @@ package storage
 import (
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 func TestStaleness_CRUD(t *testing.T) {

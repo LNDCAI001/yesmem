@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/config"
 	"gopkg.in/yaml.v3"
 )
 

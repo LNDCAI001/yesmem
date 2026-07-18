@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // openClawLine represents a single line in OpenClaw's JSONL format.

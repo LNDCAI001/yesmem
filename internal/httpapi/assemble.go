@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/proxy"
+	"github.com/LNDCAI001/yesmem/internal/proxy"
 )
 
 // AssembleRequest is the input for the POST /api/assemble endpoint.

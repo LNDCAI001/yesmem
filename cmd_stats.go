@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // parseTimeArg parses a time argument: ISO date (2026-03-18), relative (7d, 30d), or empty.

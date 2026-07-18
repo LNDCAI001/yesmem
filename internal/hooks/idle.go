@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
 )
 
 // RunIdleTick reads UserPromptSubmit hook JSON from stdin, calls daemon idle_tick,

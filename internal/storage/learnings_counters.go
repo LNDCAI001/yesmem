@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // IncrementHitCounts bumps hit_count for the given learning IDs.

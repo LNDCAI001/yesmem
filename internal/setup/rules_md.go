@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	yesmemSkills "github.com/carsteneu/yesmem/skills"
+	yesmemSkills "github.com/LNDCAI001/yesmem/skills"
 	"gopkg.in/yaml.v3"
 )
 

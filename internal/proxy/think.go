@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/hints"
+	"github.com/LNDCAI001/yesmem/internal/hints"
 )
 
 // lastUserHasText returns true when the last user message contains actual text content

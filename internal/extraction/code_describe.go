@@ -6,8 +6,8 @@ import (
 	"log"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/codescan"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/codescan"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // PackageDescriptionResponse is the structured LLM output for a package description.

@@ -3,7 +3,7 @@ package extraction
 import (
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // TestParseExtractionResponse_OriginTool asserts that learnings produced by

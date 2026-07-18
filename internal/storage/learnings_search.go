@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // projectMatchesTolerant reports whether a learning (identified by its per-row project

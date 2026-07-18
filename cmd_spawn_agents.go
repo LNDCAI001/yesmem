@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
-	"github.com/carsteneu/yesmem/internal/orchestrator"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/orchestrator"
 )
 
 func runSpawnAgents(args []string) {

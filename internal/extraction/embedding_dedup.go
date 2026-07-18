@@ -4,8 +4,8 @@ import (
 	"database/sql"
 	"math"
 
-	"github.com/carsteneu/yesmem/internal/embedding"
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/embedding"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // FindEmbeddingDuplicates finds near-duplicate learnings using cosine similarity

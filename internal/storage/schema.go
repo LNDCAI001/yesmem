@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/carsteneu/yesmem/internal/textutil"
+	"github.com/LNDCAI001/yesmem/internal/textutil"
 )
 
 // createSchema creates all tables if they don't exist.

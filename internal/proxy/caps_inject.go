@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/capfile"
+	"github.com/LNDCAI001/yesmem/internal/capfile"
 )
 
 // ScriptInjection carries one script entry inside a cap — Cap-Spec v1.1

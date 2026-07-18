@@ -3,7 +3,7 @@ package daemon
 import (
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 func TestIsRecurrenceCandidate_True(t *testing.T) {

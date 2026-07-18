@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
-	"github.com/carsteneu/yesmem/internal/models"
-	"github.com/carsteneu/yesmem/internal/storage"
-	"github.com/carsteneu/yesmem/internal/textutil"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/textutil"
 )
 
 // RunFailure combines hook-learn + hook-assist into a single hook.

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // projectMatchesTolerant reports whether a learning belongs to the requested project,

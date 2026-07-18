@@ -3,7 +3,7 @@ package daemon
 import (
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/textutil"
+	"github.com/LNDCAI001/yesmem/internal/textutil"
 )
 
 // DiffClass tags a proposed cap-body change as either a small fix that the

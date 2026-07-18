@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
 )
 
 // SessionEndInput represents the JSON Claude Code sends for SessionEnd.

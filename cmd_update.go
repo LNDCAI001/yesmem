@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/carsteneu/yesmem/internal/buildinfo"
-	"github.com/carsteneu/yesmem/internal/config"
-	"github.com/carsteneu/yesmem/internal/setup"
-	"github.com/carsteneu/yesmem/internal/storage"
-	"github.com/carsteneu/yesmem/internal/update"
+	"github.com/LNDCAI001/yesmem/internal/buildinfo"
+	"github.com/LNDCAI001/yesmem/internal/config"
+	"github.com/LNDCAI001/yesmem/internal/setup"
+	"github.com/LNDCAI001/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/update"
 )
 
 func runCheckUpdate() {

@@ -3,7 +3,7 @@ package capblob
 import (
 	"io"
 
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 type Store interface {

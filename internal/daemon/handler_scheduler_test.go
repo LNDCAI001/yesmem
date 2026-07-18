@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/models"
-	"github.com/carsteneu/yesmem/internal/sanitize"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/sanitize"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 func TestHeadlessArgs_NoSession(t *testing.T) {

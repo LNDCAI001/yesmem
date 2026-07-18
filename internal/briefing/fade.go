@@ -1,6 +1,6 @@
 package briefing
 
-import "github.com/carsteneu/yesmem/internal/models"
+import "github.com/LNDCAI001/yesmem/internal/models"
 
 // fadeThreshold is the minimum score for a learning to appear in the briefing.
 // Learnings below this are "faded" — still in DB and searchable, but not shown.

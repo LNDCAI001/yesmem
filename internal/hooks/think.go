@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
 )
 
 // RunThink registers the session PID with the daemon for MCP session resolution.

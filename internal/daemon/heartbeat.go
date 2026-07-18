@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/orchestrator"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/orchestrator"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // startAgentHeartbeat runs a goroutine that polls for unread channel messages

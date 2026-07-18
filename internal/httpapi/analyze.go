@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/carsteneu/yesmem/internal/proxy"
+	"github.com/LNDCAI001/yesmem/internal/proxy"
 )
 
 // AnalyzeTurnRequest is the input for POST /api/analyze-turn.

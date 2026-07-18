@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/codescan"
+	"github.com/LNDCAI001/yesmem/internal/codescan"
 )
 
 // codeGraphEntry holds a cached CodeGraph with the git HEAD it was built from.

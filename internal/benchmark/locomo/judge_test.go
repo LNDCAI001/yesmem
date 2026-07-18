@@ -4,7 +4,7 @@ package locomo
 import (
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/benchmark"
+	"github.com/LNDCAI001/yesmem/internal/benchmark"
 )
 
 // mockLLM implements benchmark.LLMClient for testing.

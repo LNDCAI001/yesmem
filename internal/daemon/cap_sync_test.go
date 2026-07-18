@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/capfile"
+	"github.com/LNDCAI001/yesmem/internal/capfile"
 )
 
 type stubDDLLooker struct {

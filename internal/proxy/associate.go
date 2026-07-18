@@ -11,9 +11,9 @@ import (
 	"unicode"
 
 	"github.com/bbalet/stopwords"
-	"github.com/carsteneu/yesmem/internal/briefing"
-	"github.com/carsteneu/yesmem/internal/extraction"
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/briefing"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 const associativeScoreThreshold = 38     // 0-100 scale: primary threshold for strong matches (was 45)

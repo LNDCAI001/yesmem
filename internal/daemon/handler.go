@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/bloom"
-	"github.com/carsteneu/yesmem/internal/embedding"
-	"github.com/carsteneu/yesmem/internal/extraction"
-	"github.com/carsteneu/yesmem/internal/indexer"
-	"github.com/carsteneu/yesmem/internal/sanitize"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/bloom"
+	"github.com/LNDCAI001/yesmem/internal/embedding"
+	"github.com/LNDCAI001/yesmem/internal/extraction"
+	"github.com/LNDCAI001/yesmem/internal/indexer"
+	"github.com/LNDCAI001/yesmem/internal/sanitize"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 	_ "modernc.org/sqlite" // opencode session tracking
 )
 

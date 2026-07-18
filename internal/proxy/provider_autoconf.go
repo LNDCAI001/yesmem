@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/opencode"
+	"github.com/LNDCAI001/yesmem/internal/opencode"
 )
 
 // modelsJSONEntry represents one provider entry in OpenCode's models.json cache.

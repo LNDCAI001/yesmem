@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/capfile"
+	"github.com/LNDCAI001/yesmem/internal/capfile"
 )
 
 // CapFileToParams flattens a parsed CAP.md into the param map expected by

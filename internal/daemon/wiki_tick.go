@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/codescan"
-	"github.com/carsteneu/yesmem/internal/storage"
-	"github.com/carsteneu/yesmem/internal/wikirender"
+	"github.com/LNDCAI001/yesmem/internal/codescan"
+	"github.com/LNDCAI001/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/wikirender"
 )
 
 const wikiTickInterval = 5 * time.Minute

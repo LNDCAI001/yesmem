@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/orchestrator"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/orchestrator"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // handleSpawnAgent creates a DB record and starts the full PTY bridge + terminal.

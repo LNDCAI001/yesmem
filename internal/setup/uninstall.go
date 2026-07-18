@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/carsteneu/yesmem/skills"
+	"github.com/LNDCAI001/yesmem/skills"
 )
 
 // Uninstall removes all YesMem registrations and optionally data.

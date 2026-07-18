@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // normalizeTraitKey strips dimension prefixes from trait keys and trims whitespace.

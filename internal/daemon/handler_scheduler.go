@@ -11,8 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/carsteneu/yesmem/internal/capfile"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/capfile"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 func (h *Handler) handleSchedule(params map[string]any) Response {

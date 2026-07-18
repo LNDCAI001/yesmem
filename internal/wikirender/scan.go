@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/codescan"
+	"github.com/LNDCAI001/yesmem/internal/codescan"
 )
 
 type scanFile struct {

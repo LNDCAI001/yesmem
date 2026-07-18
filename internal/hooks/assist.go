@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/daemon"
+	"github.com/LNDCAI001/yesmem/internal/daemon"
 )
 
 // harmlessCommands: exit code != 0 is expected/normal for these.

@@ -3,8 +3,8 @@ package extraction
 import (
 	"testing"
 
-	"github.com/carsteneu/yesmem/internal/models"
-	"github.com/carsteneu/yesmem/internal/storage"
+	"github.com/LNDCAI001/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/storage"
 )
 
 // insertTestLearningFTS inserts a learning and syncs the FTS5 index.

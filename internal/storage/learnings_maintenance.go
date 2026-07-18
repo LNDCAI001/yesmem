@@ -3,7 +3,7 @@ package storage
 import (
 	"fmt"
 
-	"github.com/carsteneu/yesmem/internal/textutil"
+	"github.com/LNDCAI001/yesmem/internal/textutil"
 )
 
 // DeleteOldNarratives deletes narratives for a project, keeping the N most recent.

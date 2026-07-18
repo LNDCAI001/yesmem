@@ -19,10 +19,11 @@ import (
 
 // forwardWithAnnotation forwards the request and extracts annotations from the SSE response.
 func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Request, body []byte, reqIdx int, toolUseIDs []string, proj string, threadID string, msgCount int, estimatedTokens ...int) {
-	// Debug: dump request body to file for inspection
-	if s.cfg.DataDir != "" {
+	// Debug: dump request body to file.
+	// Gate: only when YESMEM_DUMP_REQUESTS=1, default OFF.
+	if os.Getenv("YESMEM_DUMP_REQUESTS") == "1" && s.cfg.DataDir != "" {
 		debugPath := filepath.Join(s.cfg.DataDir, "logs", fmt.Sprintf("req_%d_body.json", reqIdx))
-		os.WriteFile(debugPath, body, 0644)
+		_ = os.WriteFile(debugPath, body, 0644)
 	}
 
 	targetURL := s.resolveAnthropicTarget(extractModelFromBody(body)) + origReq.URL.RequestURI()

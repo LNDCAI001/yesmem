@@ -1,6 +1,6 @@
 package extraction
 
-import "github.com/carsteneu/yesmem/internal/sanitize"
+import "github.com/LNDCAI001/yesmem/internal/sanitize"
 
 var _ LLMClient = (*SanitizingClient)(nil)
 

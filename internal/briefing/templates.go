@@ -7,7 +7,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // Templates use .S for translated strings and .D for data.

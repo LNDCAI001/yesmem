@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/carsteneu/yesmem/internal/parser"
+	"github.com/LNDCAI001/yesmem/internal/parser"
 )
 
 // IngestRequest is the input for POST /api/ingest.

@@ -3,7 +3,7 @@ package storage
 import (
 	"fmt"
 
-	"github.com/carsteneu/yesmem/internal/models"
+	"github.com/LNDCAI001/yesmem/internal/models"
 )
 
 // UpsertProjectProfile inserts or updates a project profile.

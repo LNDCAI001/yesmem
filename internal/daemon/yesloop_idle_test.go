@@ -403,6 +403,63 @@ func TestCheckYesloopIdle_MaxRefires(t *testing.T) {
 	}
 }
 
+// TestCheckYesloopIdle_EscalationPayload_HasHint: the DEAD_AGENT notification
+// sent to the orchestrator on idle escalation must include the pause-hint so
+// the orchestrator reaches for relay_agent, not resume_agent (Learning #81175).
+func TestCheckYesloopIdle_EscalationPayload_HasHint(t *testing.T) {
+	resetIdleState()
+	h, s := mustHandler(t)
+
+	makeYesloopAgent(t, h, s, "hint-1", "sess-hint1", testPID, false, 11*time.Minute)
+
+	// Drive the agent into the DONE/escalation state by walking through the
+	// refire cycle, same as TestCheckYesloopIdle_MaxRefires.
+	h.checkYesloopIdle()
+
+	yesloopIdleAgentsMu.Lock()
+	state, _ := yesloopIdleAgents["hint-1"]
+	state.idleSince = time.Now().Add(-11 * time.Minute)
+	state.state = yesloopIdleStateSelfCheck
+	state.lastRelayAt = time.Now().Add(-91 * time.Second)
+	yesloopIdleAgentsMu.Unlock()
+
+	h.checkYesloopIdle() // refire 1
+
+	yesloopIdleAgentsMu.Lock()
+	state.lastRelayAt = time.Now().Add(-91 * time.Second)
+	yesloopIdleAgentsMu.Unlock()
+	h.checkYesloopIdle() // refire 2
+
+	yesloopIdleAgentsMu.Lock()
+	state.lastRelayAt = time.Now().Add(-91 * time.Second)
+	yesloopIdleAgentsMu.Unlock()
+	h.checkYesloopIdle() // escalation
+
+	if !hasIdleState("hint-1", yesloopIdleStateDone) {
+		t.Fatal("expected DONE (escalation) state")
+	}
+
+	// Read the channel messages for the caller session and check the hint.
+	msgs, err := s.GetChannelMessages("caller-hint-1")
+	if err != nil {
+		t.Fatalf("GetChannelMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one DEAD_AGENT message to caller")
+	}
+	var found bool
+	for _, m := range msgs {
+		if strings.Contains(m.Content, orchestratorPauseHint) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no DEAD_AGENT message contained the pause hint %q; got messages: %+v",
+			orchestratorPauseHint, msgs)
+	}
+}
+
 // --- Helpers ---
 
 // buildSixPhaseCompleteContent returns a scratchpad string with all 6 phases

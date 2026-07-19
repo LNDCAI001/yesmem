@@ -337,6 +337,17 @@ func (h *Handler) pauseAgent(id, reason string) {
 	})
 }
 
+// unpauseAgent mirrors pauseAgent: flips status back to running with a
+// recovery note. Only for agents paused by DONE-GUARD whose scratchpad
+// later became compliant — no process spawn, pure DB flip.
+func (h *Handler) unpauseAgent(id, reason string) {
+	h.store.AgentUpdate(id, map[string]any{
+		"status":   "running",
+		"progress": fmt.Sprintf("recovered by DONE-GUARD at %s: %s",
+			time.Now().Format("2006-01-02 15:04:05"), reason),
+	})
+}
+
 // getAgentMaxRuntime returns the configured max runtime for agents.
 func (h *Handler) getAgentMaxRuntime() time.Duration {
 	if h.agentMaxRuntime > 0 {
@@ -378,6 +389,14 @@ func (h *Handler) attemptRestart() {
 
 		if agent.SockPath == "" {
 			log.Printf("[heartbeat] agent %s has no SockPath, skipping restart", agent.ID)
+			continue
+		}
+
+		// L4: skip opencode agents whose OpencodeSessionID was never captured.
+		// --resume with the daemon UUID makes opencode exit 1 (Learning #80228).
+		if agent.Backend == "opencode" && agent.OpencodeSessionID == "" {
+			log.Printf("[heartbeat] agent %s has no opencode_session_id, skipping restart (would fall back to daemon UUID)", agent.ID)
+			h.stopAgent(agent.ID, opencodeUnresumableMsg)
 			continue
 		}
 
@@ -576,16 +595,25 @@ func (h *Handler) sendOrchestratorStatusPing() {
 }
 
 // checkYesloopDoneGuard validates yesloop agent scratchpad sections for
-// DONE compliance. If an agent claims all 6 phases COMPLETE but the
-// phase blocks fail validation, the agent is paused and the orchestrator
-// notified. Runs every ~30s from startAgentHeartbeat.
+// DONE compliance. If an agent claims all 6 phases COMPLETE but the phase
+// blocks fail validation, the per-agent refire state machine
+// (yesloop_done_guard.go) relays the missing field to the agent and only
+// pauses after doneGuardMaxRefires attempts. Runs every ~30s from
+// startAgentHeartbeat.
 func (h *Handler) checkYesloopDoneGuard() {
 	agents, err := h.store.AgentList("")
 	if err != nil {
 		return
 	}
 	for _, agent := range agents {
-		if agent.Status != "running" {
+		if agent.Status != "running" && agent.Status != "paused" {
+			continue
+		}
+		// Paused agents: only revalidate those paused by DONE-GUARD.
+		// Idle and DoneVerify pauses use different progress prefixes
+		// ("paused: yesloop-idle escalation:" / "paused: yesloop-done-verify
+		// escalation:") and must not be touched by this guard.
+		if agent.Status == "paused" && !strings.HasPrefix(agent.Progress, "paused: DONE-GUARD:") {
 			continue
 		}
 		// Only check yesloop agents (section starts with "yesloop-")
@@ -606,31 +634,14 @@ func (h *Handler) checkYesloopDoneGuard() {
 
 		result := ValidatePhaseBlocks(content)
 
-		// Only escalate if all 6 phases are present (agent claims DONE)
-		// but validation fails. Missing phases = still in progress.
+		// Missing phases = still in progress, agent hasn't claimed DONE yet.
 		if len(result.MissingPhases) > 0 {
 			continue
 		}
-		if result.Compliant {
-			continue // all phases valid, nothing to do
-		}
 
-		// DONE claimed but validation failed → pause agent + notify orchestrator
-		log.Printf("[heartbeat] DONE-GUARD: agent %s (%s) claims DONE but phase validation FAILED:\n%s",
-			agent.ID, agent.Section, result.String())
-
-		h.pauseAgent(agent.ID, fmt.Sprintf("DONE-GUARD: phase validation failed — %s", summarizeErrors(result)))
-
-		if agent.CallerSession != "" {
-			h.Handle(Request{
-				Method: "send_to",
-				Params: map[string]any{
-					"target":   agent.CallerSession,
-					"content":  fmt.Sprintf("⛔ DONE-GUARD: Agent %s (%s) claims DONE but phase validation FAILED. Paused.\n%s", agent.ID, agent.Section, result.String()),
-					"msg_type": "status",
-				},
-			})
-		}
+		// All 6 phases present. Delegate refire/pause decision to the state
+		// machine in yesloop_done_guard.go.
+		h.checkOneDoneGuardAgent(agent, result)
 	}
 }
 

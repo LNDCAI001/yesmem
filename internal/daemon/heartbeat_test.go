@@ -805,3 +805,56 @@ func TestPauseAgent_Idempotent(t *testing.T) {
 		t.Errorf("double pauseAgent: status=%q want paused", a.Status)
 	}
 }
+
+// TestAttemptRestart_OpencodeEmptySession_SkipsAndStops: the L4 guard in
+// attemptRestart prevents restart of an opencode agent with empty
+// OpencodeSessionID. Without this guard, --resume would fall back to the
+// daemon UUID and opencode would exit 1 (Learning #80228). Cold-review I2.
+func TestAttemptRestart_OpencodeEmptySession_SkipsAndStops(t *testing.T) {
+	h, s := mustHandler(t)
+	now := time.Now().Format("2006-01-02 15:04:05")
+
+	s.AgentCreate(storage.Agent{
+		ID: "restart-oc", Project: "p", Section: "s",
+		Status: "error", PID: 99999999, CreatedAt: now,
+		Backend: "opencode", SockPath: "/tmp/restart-oc.sock",
+		RestartStrategy: "permanent", SessionID: "daemon-uuid-36-chars",
+		// OpencodeSessionID intentionally empty.
+	})
+
+	h.attemptRestart()
+
+	a, _ := s.AgentGet("restart-oc")
+	if a.Status != "stopped" {
+		t.Errorf("opencode agent with empty OpencodeSessionID should be stopped not restarted, got status=%q", a.Status)
+	}
+	if !strings.Contains(a.Progress, opencodeUnresumableMsg) {
+		t.Errorf("stopped agent progress should mention %q, got %q", opencodeUnresumableMsg, a.Progress)
+	}
+}
+
+// TestAttemptRestart_OpencodeWithSession_Allowed: an opencode agent WITH a
+// valid OpencodeSessionID proceeds through the restart path (it will fail
+// later due to a bad binary path, but the L4 guard must not stop it).
+func TestAttemptRestart_OpencodeWithSession_Allowed(t *testing.T) {
+	h, s := mustHandler(t)
+	now := time.Now().Format("2006-01-02 15:04:05")
+
+	s.AgentCreate(storage.Agent{
+		ID: "restart-oc2", Project: "p", Section: "s2",
+		Status: "error", PID: 99999999, CreatedAt: now,
+		Backend: "opencode", SockPath: "/tmp/restart-oc2.sock",
+		RestartStrategy: "permanent", SessionID: "daemon-uuid-36-chars",
+		OpencodeSessionID: "ses_oc_valid",
+	})
+
+	h.attemptRestart()
+
+	a, _ := s.AgentGet("restart-oc2")
+	// Agent should NOT be stopped by the L4 guard (it has a valid session).
+	// It may be running (exec started) or error (exec failed) — either way,
+	// not "stopped" with the unresumable message.
+	if a.Status == "stopped" && strings.Contains(a.Progress, opencodeUnresumableMsg) {
+		t.Errorf("opencode agent WITH OpencodeSessionID should NOT be stopped by L4 guard, got status=%q progress=%q", a.Status, a.Progress)
+	}
+}

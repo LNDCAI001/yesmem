@@ -98,6 +98,7 @@ func (h *Handler) handleSaveCap(params map[string]any) Response {
 	if v, ok := params["auto_active"].(bool); ok {
 		autoActive = v
 	}
+	scope := stringOr(params, "scope", "")
 
 	// Auto-supersede: find existing cap with same name.
 	// Skip if version unchanged (avoids churn on daemon restart).
@@ -163,6 +164,7 @@ func (h *Handler) handleSaveCap(params map[string]any) Response {
 		Tested:      tested,
 		TestDate:    testDate,
 		AutoActive:  autoActive,
+		Scope:       scope,
 	}
 	if actionsStr := stringOr(params, "actions", ""); actionsStr != "" {
 		if err := json.Unmarshal([]byte(actionsStr), &meta.Actions); err != nil {
@@ -174,12 +176,19 @@ func (h *Handler) handleSaveCap(params map[string]any) Response {
 		return errorResponse(fmt.Sprintf("save_cap: %v", err))
 	}
 
+	// User-scoped caps are project-agnostic: clear project so activation
+	// works from any session regardless of which project saved it.
+	effectiveProject := project
+	if scope == "user" {
+		effectiveProject = ""
+	}
+
 	l := &models.Learning{
 		Content:            content,
 		Category:           "cap",
 		Source:             source,
-		Project:            project,
-		CanonicalProject:   canonicalProjectFor(project),
+		Project:            effectiveProject,
+		CanonicalProject:   canonicalProjectFor(effectiveProject),
 		Confidence:         1.0,
 		Context:            ctxJSON,
 		Domain:             "code",
@@ -348,7 +357,9 @@ func (h *Handler) handleActivateCap(params map[string]any) Response {
 		return errorResponse(fmt.Sprintf("activate_cap: no cap found with name %q", name))
 	}
 
-	if match.Project != "" && match.Project != project {
+	// Project scope check: user-scoped caps (cap_scope=="user") are project-agnostic.
+	// Legacy caps without explicit scope still enforce project matching for backward compat.
+	if meta.Scope != "user" && match.Project != "" && match.Project != project {
 		return errorResponse(fmt.Sprintf(
 			"activate_cap: cap %q is scoped to project %q (got project=%q)",
 			name, match.Project, project,

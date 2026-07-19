@@ -48,6 +48,9 @@ func CapFileToParams(cf capfile.CapFile) map[string]any {
 	if cf.AutoActive {
 		params["auto_active"] = true
 	}
+	if cf.Scope != "" {
+		params["scope"] = cf.Scope
+	}
 	if len(cf.Actions) > 0 {
 		actionsJSON, _ := json.Marshal(cf.Actions)
 		params["actions"] = string(actionsJSON)

@@ -33,6 +33,7 @@ type CapMeta struct {
 	TestDate    string            `json:"cap_test_date,omitempty"`
 	AutoActive  bool              `json:"cap_auto_active,omitempty"`
 	Actions     map[string]string `json:"cap_actions,omitempty"`
+	Scope       string            `json:"cap_scope,omitempty"` // "user" | "project"
 }
 
 // ParseCapMeta parses JSON from a Learning's Context field into CapMeta.

@@ -40,6 +40,13 @@ const (
 	yesloopIdleRefireInterval = 90 * time.Second
 )
 
+// orchestratorPauseHint is appended to DEAD_AGENT escalation messages sent
+// from the yesloop idle and done-verify layers to the orchestrator. Paused
+// agents have a live PID and open PTY bridge — resume_agent is a no-op
+// dressed up as action. The correct action is relay_agent with approval
+// content so the agent picks up the relay on its next tick. Learning #81175.
+const orchestratorPauseHint = " → use relay_agent with approval content, NOT resume_agent"
+
 // yesloopIdleState tracks the idle state machine for a single yesloop agent.
 type yesloopIdleState struct {
 	state          int
@@ -189,7 +196,8 @@ func (h *Handler) maybeRefire(agent storage.Agent, state *yesloopIdleState, rela
 		log.Printf("[yesloop-idle] agent %s (%s) ESCALATION: %s (refireCount=%d, max=%d)",
 			agent.ID, agent.Section, reason, state.refireCount, yesloopIdleMaxRefires)
 		h.pauseAgent(agent.ID, fmt.Sprintf("yesloop-idle escalation: %s", reason))
-		h.notifyOrchestrator(agent, fmt.Sprintf("DEAD_AGENT: Agent %s (%s) idle escalation - %s", agent.ID, agent.Section, reason))
+		h.notifyOrchestrator(agent, fmt.Sprintf("DEAD_AGENT: Agent %s (%s) idle escalation - %s%s",
+			agent.ID, agent.Section, reason, orchestratorPauseHint))
 		return
 	}
 	h.sendIdleRelay(agent, state, relayNum)

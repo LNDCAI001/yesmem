@@ -62,19 +62,39 @@ var (
 	yesloopDoneVerifyAgentsMu sync.Mutex
 )
 
-// DONE-claim indicators. Match case-insensitively against the scratchpad.
-// Trigger when ANY of these is present.
-var doneClaimIndicators = []*regexp.Regexp{
+// DONE-claim indicators are split into two groups:
+//   - structural indicators are matched against the full scratchpad content.
+//     They are anchors that don't false-positive on body text.
+//   - text indicators are matched against the Phase 6 block ONLY. They would
+//     false-positive on briefing/template text elsewhere (e.g. an agent's
+//     Phase 1 notes the instruction "send_to DONE when complete"). #82125.
+var doneClaimIndicatorsStructural = []*regexp.Regexp{
 	regexp.MustCompile(`(?im)^###\s+Phase\s+6\s*:`),
-	regexp.MustCompile(`(?im)send_to[^\n]*\bDONE\b`),
 	regexp.MustCompile(`(?im)Phase\s+6\s*/\s*6\b`),
+}
+
+var doneClaimIndicatorsText = []*regexp.Regexp{
+	regexp.MustCompile(`(?im)send_to[^\n]*\bDONE\b`),
 	regexp.MustCompile(`(?im)^DONE:\s`),
 }
 
 // hasDoneClaim reports whether content carries any DONE-claim indicator.
+// Structural indicators are matched against full content; text indicators
+// are scoped to the Phase 6 block only (Phase 6 is the source of truth for
+// real DONE claims — Phase 1-5 mentions are aspirational/instructional).
 func hasDoneClaim(content string) bool {
-	for _, re := range doneClaimIndicators {
+	for _, re := range doneClaimIndicatorsStructural {
 		if re.MatchString(content) {
+			return true
+		}
+	}
+	phases := splitPhases(content)
+	phase6, ok := phases[6]
+	if !ok {
+		return false
+	}
+	for _, re := range doneClaimIndicatorsText {
+		if re.MatchString(phase6) {
 			return true
 		}
 	}
@@ -197,8 +217,8 @@ func (h *Handler) maybeDoneVerifyRefire(agent storage.Agent, state *yesloopDoneV
 		state.transitionedAt = time.Now()
 		h.pauseAgent(agent.ID, fmt.Sprintf("yesloop-done-verify escalation: %s", reason))
 		h.notifyOrchestrator(agent, fmt.Sprintf(
-			"DEAD_AGENT: Agent %s (%s) done-verify escalation — %s",
-			agent.ID, agent.Section, reason))
+			"DEAD_AGENT: Agent %s (%s) done-verify escalation — %s%s",
+			agent.ID, agent.Section, reason, orchestratorPauseHint))
 		return
 	}
 	h.sendDoneVerifyRelay(agent, state)

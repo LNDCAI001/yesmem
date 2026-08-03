@@ -143,112 +143,97 @@ func TestValidateToolPairs_MixedValidAndOrphan(t *testing.T) {
 	}
 }
 
-// countSurvivingToolUses walks the repaired messages and returns how many tool_use
-// blocks survive — used to assert orphan tool_use removal.
-func countSurvivingToolUses(messages []any) int {
-	n := 0
-	for _, msg := range messages {
-		m, ok := msg.(map[string]any)
-		if !ok {
-			continue
-		}
-		content, ok := m["content"].([]any)
-		if !ok {
-			continue
-		}
-		for _, block := range content {
-			if b, ok := block.(map[string]any); ok && b["type"] == "tool_use" {
-				n++
-			}
-		}
+func TestValidateToolPairs_SynthesizesNakedToolUse_LastMessage(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "user", "content": "run the tool"},
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "text", "text": "calling tool"},
+			map[string]any{"type": "tool_use", "id": "tu_naked", "name": "bash"},
+		}},
 	}
-	return n
+
+	result, repairs := validateToolPairs(messages, nil)
+	if repairs != 1 {
+		t.Fatalf("expected 1 repair, got %d", repairs)
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages (synthetic user appended), got %d", len(result))
+	}
+	synthMsg, ok := result[2].(map[string]any)
+	if !ok || synthMsg["role"] != "user" {
+		t.Fatalf("expected user message at index 2, got %v", result[2])
+	}
+	content := synthMsg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(content))
+	}
+	block := content[0].(map[string]any)
+	if block["type"] != "tool_result" {
+		t.Errorf("expected tool_result, got %v", block["type"])
+	}
+	if block["tool_use_id"] != "tu_naked" {
+		t.Errorf("expected tu_naked, got %v", block["tool_use_id"])
+	}
 }
 
-// TestValidateToolPairs_OrphanToolUse is the direct regression test for the
-// 400 "tool use concurrency" fix: an assistant tool_use with no matching
-// tool_result (e.g. its result was dropped by collapse) must be removed.
-func TestValidateToolPairs_OrphanToolUse(t *testing.T) {
+func TestValidateToolPairs_SynthesizesNakedToolUse_UserWithoutResult(t *testing.T) {
 	messages := []any{
 		map[string]any{"role": "user", "content": "hello"},
 		map[string]any{"role": "assistant", "content": []any{
-			map[string]any{"type": "tool_use", "id": "tu_orphan", "name": "read"},
-		}},
-		map[string]any{"role": "user", "content": "next question"},
-	}
-
-	result, orphans := validateToolPairs(messages, nil)
-	if orphans != 1 {
-		t.Fatalf("expected 1 orphan tool_use removed, got %d", orphans)
-	}
-	if got := countSurvivingToolUses(result); got != 0 {
-		t.Fatalf("expected orphan tool_use gone, still have %d", got)
-	}
-}
-
-// TestValidateToolPairs_OrphanToolUseKeepsText verifies only the orphan
-// tool_use is stripped, leaving sibling text in the same message intact.
-func TestValidateToolPairs_OrphanToolUseKeepsText(t *testing.T) {
-	messages := []any{
-		map[string]any{"role": "user", "content": "hi"},
-		map[string]any{"role": "assistant", "content": []any{
-			map[string]any{"type": "text", "text": "let me check"},
-			map[string]any{"type": "tool_use", "id": "tu_orphan", "name": "bash"},
-		}},
-		map[string]any{"role": "user", "content": "ok"},
-	}
-
-	result, orphans := validateToolPairs(messages, nil)
-	if orphans != 1 {
-		t.Fatalf("expected 1 orphan, got %d", orphans)
-	}
-	msg := result[1].(map[string]any)
-	content := msg["content"].([]any)
-	if len(content) != 1 || content[0].(map[string]any)["type"] != "text" {
-		t.Fatalf("expected only the text block to survive, got %v", content)
-	}
-}
-
-// TestValidateToolPairs_ValidPairSurvives is a regression guard: a tool_use
-// WITH its matching tool_result must never be treated as an orphan.
-func TestValidateToolPairs_ValidPairSurvives(t *testing.T) {
-	messages := []any{
-		map[string]any{"role": "assistant", "content": []any{
-			map[string]any{"type": "tool_use", "id": "tu_1", "name": "read"},
+			map[string]any{"type": "tool_use", "id": "tu_a", "name": "read"},
 		}},
 		map[string]any{"role": "user", "content": []any{
-			map[string]any{"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
+			map[string]any{"type": "text", "text": "user reply without tool_result"},
 		}},
 	}
 
-	result, orphans := validateToolPairs(messages, nil)
-	if orphans != 0 {
-		t.Fatalf("valid tool_use/tool_result pair must not be removed, got %d orphans", orphans)
+	result, repairs := validateToolPairs(messages, nil)
+	if repairs != 1 {
+		t.Fatalf("expected 1 repair, got %d", repairs)
 	}
-	if got := countSurvivingToolUses(result); got != 1 {
-		t.Fatalf("expected the paired tool_use to survive, got %d", got)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	userMsg := result[2].(map[string]any)
+	content := userMsg["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("expected 2 blocks (text + synthetic), got %d", len(content))
+	}
+	synthBlock := content[1].(map[string]any)
+	if synthBlock["type"] != "tool_result" {
+		t.Errorf("expected tool_result, got %v", synthBlock["type"])
+	}
+	if synthBlock["tool_use_id"] != "tu_a" {
+		t.Errorf("expected tu_a, got %v", synthBlock["tool_use_id"])
 	}
 }
 
-// TestValidateToolPairs_BothDirections removes an orphan tool_use and an orphan
-// tool_result in one request while preserving the fully-paired pair.
-func TestValidateToolPairs_BothDirections(t *testing.T) {
+func TestValidateToolPairs_SynthesizesOnlyMissingResults(t *testing.T) {
 	messages := []any{
+		map[string]any{"role": "user", "content": "go"},
 		map[string]any{"role": "assistant", "content": []any{
-			map[string]any{"type": "tool_use", "id": "tu_paired", "name": "read"},
-			map[string]any{"type": "tool_use", "id": "tu_orphanuse", "name": "read"},
+			map[string]any{"type": "tool_use", "id": "tu_has_result", "name": "read"},
+			map[string]any{"type": "tool_use", "id": "tu_naked", "name": "bash"},
 		}},
 		map[string]any{"role": "user", "content": []any{
-			map[string]any{"type": "tool_result", "tool_use_id": "tu_paired", "content": "ok"},
-			map[string]any{"type": "tool_result", "tool_use_id": "tu_orphanres", "content": "nope"},
+			map[string]any{"type": "tool_result", "tool_use_id": "tu_has_result", "content": "ok"},
 		}},
 	}
 
-	result, orphans := validateToolPairs(messages, nil)
-	if orphans != 2 {
-		t.Fatalf("expected 2 orphans (1 use + 1 result), got %d", orphans)
+	result, repairs := validateToolPairs(messages, nil)
+	if repairs != 1 {
+		t.Fatalf("expected 1 repair, got %d", repairs)
 	}
-	if got := countSurvivingToolUses(result); got != 1 {
-		t.Fatalf("expected only the paired tool_use to survive, got %d", got)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	userMsg := result[2].(map[string]any)
+	content := userMsg["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("expected 2 blocks (original + synthetic), got %d", len(content))
+	}
+	synthBlock := content[1].(map[string]any)
+	if synthBlock["tool_use_id"] != "tu_naked" {
+		t.Errorf("expected tu_naked synthesized, got %v", synthBlock["tool_use_id"])
 	}
 }

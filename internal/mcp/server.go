@@ -30,11 +30,11 @@ const contentLangDirective = " LANGUAGE: write content in English, regardless of
 // Description constants for common filter parameters. Using DRY constants
 // ensures consistent guidance across all MCP tools.
 const (
-	projectFilterDesc    = "Full working directory path (e.g., /home/user/projects/my-app). Always set this to your current working directory — short names like 'my-app' may be ambiguous across multiple projects and trigger a cwd-based tiebreaker in the daemon. Leave empty only for cross-project searches."
-	projectRequiredDesc  = "Full working directory path (e.g., /home/user/projects/my-app). Always set this to your current working directory — short names like 'my-app' are ambiguous across projects."
-	sinceDesc            = "ISO 8601 date-time lower bound (inclusive), e.g. '2026-07-01' or '2026-07-01T00:00:00Z'. Items at or after this timestamp."
-	beforeDesc           = "ISO 8601 date-time upper bound (exclusive), e.g. '2026-07-07'. Items strictly before this timestamp."
-	limitDesc            = "Maximum number of results to return. Default depends on tool (typically 10-100)."
+	projectFilterDesc   = "Full working directory path (e.g., /home/user/projects/my-app). Always set this to your current working directory — short names like 'my-app' may be ambiguous across multiple projects and trigger a cwd-based tiebreaker in the daemon. Leave empty only for cross-project searches."
+	projectRequiredDesc = "Full working directory path (e.g., /home/user/projects/my-app). Always set this to your current working directory — short names like 'my-app' are ambiguous across projects."
+	sinceDesc           = "ISO 8601 date-time lower bound (inclusive), e.g. '2026-07-01' or '2026-07-01T00:00:00Z'. Items at or after this timestamp."
+	beforeDesc          = "ISO 8601 date-time upper bound (exclusive), e.g. '2026-07-07'. Items strictly before this timestamp."
+	limitDesc           = "Maximum number of results to return. Default depends on tool (typically 10-100)."
 )
 
 // New creates an MCP server. Connection to daemon is established lazily
@@ -89,6 +89,46 @@ func (s *Server) ServeStdio() error {
 	return mcpserver.ServeStdio(s.srv)
 }
 
+func buildProxyParams(arguments map[string]any, withThreadID bool) map[string]any {
+	params := make(map[string]any, len(arguments)+6)
+	for key, value := range arguments {
+		params[key] = value
+	}
+
+	if _, exists := params["_caller_pid"]; !exists {
+		params["_caller_pid"] = float64(os.Getppid())
+	}
+
+	sessionID, sourceAgent := resolveClientSessionID()
+	if _, exists := params["_session_id"]; !exists && sessionID != "" {
+		params["_session_id"] = sessionID
+	}
+	if _, exists := params["_source_agent"]; !exists && sourceAgent != "" && sourceAgent != "claude" {
+		params["_source_agent"] = sourceAgent
+	}
+	if value, ok := params["_source_agent"].(string); ok && value != "" {
+		sourceAgent = value
+	}
+	if _, exists := params["_client_model"]; !exists {
+		if model := currentClientModel(); model != "" {
+			params["_client_model"] = model
+		}
+	}
+	if _, exists := params["_cwd"]; !exists {
+		if cwd := callerCWD(sourceAgent); cwd != "" {
+			params["_cwd"] = cwd
+		}
+	}
+	if withThreadID {
+		if _, exists := params["thread_id"]; !exists {
+			if sessionID, ok := params["_session_id"].(string); ok && sessionID != "" {
+				params["thread_id"] = sessionID
+			}
+		}
+	}
+	return params
+}
+
 func (s *Server) proxyCall(method string) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		proxy, err := s.getProxy()
@@ -96,27 +136,7 @@ func (s *Server) proxyCall(method string) mcpserver.ToolHandlerFunc {
 			return mcplib.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
 		}
 
-		params := make(map[string]any)
-		for k, v := range req.Params.Arguments.(map[string]any) {
-			params[k] = v
-		}
-
-		// Inject caller PID so daemon can resolve session_id from pidMap
-		params["_caller_pid"] = float64(os.Getppid())
-		// Multi-agent session identity: opencode/codex via env vars, Claude unchanged.
-		sid, sa := resolveClientSessionID()
-		if sid != "" {
-			params["_session_id"] = sid
-		}
-		if sa != "" && sa != "claude" {
-			params["_source_agent"] = sa
-		}
-		if model := currentClientModel(); model != "" {
-			params["_client_model"] = model
-		}
-		if cwd := callerCWD(); cwd != "" {
-			params["_cwd"] = cwd
-		}
+		params := buildProxyParams(req.Params.Arguments.(map[string]any), false)
 
 		result, err := proxy.Call(method, params)
 		if err != nil {
@@ -600,19 +620,7 @@ func (s *Server) proxyCallWithThreadID(method string, formatter func(json.RawMes
 			return mcplib.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
 		}
 
-		params := make(map[string]any)
-		for k, v := range req.Params.Arguments.(map[string]any) {
-			params[k] = v
-		}
-		params["_caller_pid"] = float64(os.Getppid())
-		sid, sa := resolveClientSessionID()
-		if sid != "" {
-			params["_session_id"] = sid
-			params["thread_id"] = sid
-		}
-		if sa != "" && sa != "claude" {
-			params["_source_agent"] = sa
-		}
+		params := buildProxyParams(req.Params.Arguments.(map[string]any), true)
 
 		result, err := proxy.Call(method, params)
 		if err != nil {
@@ -623,10 +631,7 @@ func (s *Server) proxyCallWithThreadID(method string, formatter func(json.RawMes
 			return mcplib.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
 		}
 		if formatter != nil {
-			if formatter != nil {
-				return mcplib.NewToolResultText(formatter(result)), nil
-			}
-			return mcplib.NewToolResultText(string(result)), nil
+			return mcplib.NewToolResultText(formatter(result)), nil
 		}
 		return mcplib.NewToolResultText(string(result)), nil
 	}
@@ -647,6 +652,28 @@ func formatScratchpadWrite(raw json.RawMessage) string {
 	}
 	if data.Project != "" && data.Section != "" {
 		return fmt.Sprintf("✓ Wrote section '%s' in project '%s'", data.Section, data.Project)
+	}
+	return string(raw)
+}
+
+// formatScratchpadAppend renders the response from scratchpad_append.
+// Daemon returns {status, project, section, appended} or {message}.
+func formatScratchpadAppend(raw json.RawMessage) string {
+	var data struct {
+		Status   string `json:"status"`
+		Project  string `json:"project"`
+		Section  string `json:"section"`
+		Message  string `json:"message"`
+		Appended bool   `json:"appended"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return string(raw)
+	}
+	if data.Message != "" {
+		return data.Message
+	}
+	if data.Project != "" && data.Section != "" {
+		return fmt.Sprintf("✓ Appended to section '%s' in project '%s'", data.Section, data.Project)
 	}
 	return string(raw)
 }
@@ -728,23 +755,7 @@ func (s *Server) proxyCallFormat(method string, formatter func(json.RawMessage) 
 			return mcplib.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
 		}
 
-		params := make(map[string]any)
-		for k, v := range req.Params.Arguments.(map[string]any) {
-			params[k] = v
-		}
-
-		params["_caller_pid"] = float64(os.Getppid())
-		// Multi-agent session identity: opencode/codex via env vars, Claude unchanged.
-		sid, sa := resolveClientSessionID()
-		if sid != "" {
-			params["_session_id"] = sid
-		}
-		if sa != "" && sa != "claude" {
-			params["_source_agent"] = sa
-		}
-		if cwd := callerCWD(); cwd != "" {
-			params["_cwd"] = cwd
-		}
+		params := buildProxyParams(req.Params.Arguments.(map[string]any), false)
 
 		result, err := proxy.Call(method, params)
 		if err != nil {
@@ -754,7 +765,6 @@ func (s *Server) proxyCallFormat(method string, formatter func(json.RawMessage) 
 			s.mu.Unlock()
 			return mcplib.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
 		}
-
 		if formatter != nil {
 			return mcplib.NewToolResultText(formatter(result)), nil
 		}
@@ -1271,6 +1281,14 @@ func (s *Server) registerTools() {
 			mcplib.WithString("section", mcplib.Required(), mcplib.Description("Section name")),
 			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Section content")),
 		), s.proxyCallFormat("scratchpad_write", formatScratchpadWrite))
+
+	s.srv.AddTool(
+		mcplib.NewTool("scratchpad_append",
+			mcplib.WithDescription("Append content to an existing scratchpad section (inserts a `---` separator between old and new content). Use for adding status updates, progress notes, or replies to an existing section without read-then-write. Project, section, and content are required."+contentLangDirective),
+			mcplib.WithString("project", mcplib.Required(), mcplib.Description(projectRequiredDesc)),
+			mcplib.WithString("section", mcplib.Required(), mcplib.Description("Section name to append to")),
+			mcplib.WithString("content", mcplib.Required(), mcplib.Description("Content to append")),
+		), s.proxyCallFormat("scratchpad_append", formatScratchpadAppend))
 
 	s.srv.AddTool(
 		mcplib.NewTool("scratchpad_read",

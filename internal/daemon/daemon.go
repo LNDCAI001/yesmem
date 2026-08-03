@@ -30,6 +30,7 @@ import (
 	"github.com/LNDCAI001/yesmem/internal/indexer"
 	"github.com/LNDCAI001/yesmem/internal/ingest"
 	"github.com/LNDCAI001/yesmem/internal/ivf"
+	"github.com/LNDCAI001/yesmem/internal/logrotate"
 	"github.com/LNDCAI001/yesmem/internal/sanitize"
 	"github.com/LNDCAI001/yesmem/internal/storage"
 	"github.com/LNDCAI001/yesmem/internal/update"
@@ -102,14 +103,12 @@ func Run(cfg Config) error {
 		os.Setenv("PATH", filepath.Join(home, ".local/bin")+":"+os.Getenv("PATH"))
 	}
 
-	// Set up log file
-	logDir := filepath.Join(cfg.DataDir, "logs")
-	os.MkdirAll(logDir, 0755)
-	logPath := filepath.Join(logDir, "daemon.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Set up log file with rotation (50MB default, keeps 5 timestamped backups)
+	logPath := filepath.Join(cfg.DataDir, "logs", "daemon.log")
+	logWriter, err := logrotate.New(logPath)
 	if err == nil {
-		log.SetOutput(io.MultiWriter(os.Stderr, logFile))
-		defer logFile.Close()
+		log.SetOutput(io.MultiWriter(os.Stderr, logWriter))
+		defer logWriter.Close()
 	}
 
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -123,6 +122,10 @@ func Run(cfg Config) error {
 		return err
 	}
 	defer store.Close()
+	consolidator := newConsolidationRunner(store)
+	if err := consolidator.Baseline(); err != nil {
+		log.Printf("[warn] consolidation baseline: %v", err)
+	}
 
 	if err := store.MigrateAgentsSchema(); err != nil {
 		log.Printf("[warn] agents schema migration: %v", err)
@@ -158,9 +161,8 @@ func Run(cfg Config) error {
 
 	// Index progress tracking (atomics — safe for concurrent reads)
 	var indexTotal, indexDone, indexSkipped int64
-	var indexRunning int32    // 1 = running, 0 = done
-	var extractionActive int32 // >0 = extraction goroutines running
-	var lastConsolidation time.Time
+	var indexRunning int32                       // 1 = running, 0 = done
+	var extractionActive int32                   // >0 = extraction goroutines running
 	batchExtractNotify := make(chan struct{}, 1) // non-blocking signal for batch trigger
 
 	// ━━━ Socket server FIRST — MCP available immediately ━━━
@@ -214,7 +216,9 @@ func Run(cfg Config) error {
 			ticker := time.NewTicker(60 * time.Second)
 			defer ticker.Stop()
 			for range ticker.C {
-				ocScanner.MaybeScan()
+				if ocScanner.MaybeScan() > 0 {
+					handler.InvalidateProjectCache()
+				}
 			}
 		}()
 	}
@@ -345,6 +349,43 @@ func Run(cfg Config) error {
 	daemonCtx, daemonCancel := context.WithCancel(context.Background())
 	_ = daemonCancel // used at shutdown
 
+	// Keep scheduler execution history bounded. Pending errors are retained
+	// indefinitely so diagnosis and auto-correction cannot lose work.
+	go func() {
+		const (
+			bashRunCleanupInterval  = 24 * time.Hour
+			nonErrorRetention       = 24 * time.Hour
+			processedErrorRetention = 30 * 24 * time.Hour
+		)
+		cleanup := func() {
+			now := time.Now()
+			deleted, err := store.PurgeBashJobRuns(
+				now.Add(-nonErrorRetention),
+				now.Add(-processedErrorRetention),
+			)
+			if err != nil {
+				log.Printf("[scheduler] bash run cleanup failed: %v", err)
+				return
+			}
+			if deleted > 0 {
+				log.Printf("[scheduler] purged %d expired bash job runs (retention: %s non-error, %s processed-error)",
+					deleted, nonErrorRetention, processedErrorRetention)
+			}
+		}
+
+		cleanup()
+		ticker := time.NewTicker(bashRunCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-daemonCtx.Done():
+				return
+			case <-ticker.C:
+				cleanup()
+			}
+		}
+	}()
+
 	// FTS5 background sync — replaces triggers to avoid write contention on BM25 reads
 	store.StartFTSSync(daemonCtx, 10*time.Second)
 
@@ -390,6 +431,7 @@ func Run(cfg Config) error {
 				if err := idx.IndexSession(path); err != nil {
 					log.Printf("warn: index %s: %v", path, err)
 				}
+				handler.InvalidateProjectCache()
 			},
 			func(path string) {
 				log.Printf("Session settled (5min quiet): %s — queued for batch extraction", filepath.Base(path))
@@ -457,6 +499,11 @@ func Run(cfg Config) error {
 			log.Printf("warn: initial index: %v", idxErr)
 		}
 		log.Printf("Indexed %d sessions (%d skipped) in %v", totalIndexed, totalSkipped, time.Since(start).Round(time.Millisecond))
+
+		// New sessions may introduce project paths → invalidate resolution cache.
+		if totalIndexed > 0 {
+			handler.InvalidateProjectCache()
+		}
 
 		// Load graph from DB
 		assocs, assocErr := store.LoadAllAssociations()
@@ -762,15 +809,15 @@ func Run(cfg Config) error {
 			log.Printf("Quality model: %s", qualityClient.Model())
 			runInitialExtraction(ext, evoExt, store, ac, client, qualityClient, handler)
 
-			// Schlaf-Konsolidierung bei Startup (rule-based, kein LLM)
+			// Consolidate only scopes changed since the durable startup baseline.
 			go func() {
-				log.Printf("💤 Startup consolidation...")
-				result := extraction.RunConsolidation(store, nil, nil, extraction.ConsolidateConfig{
-					MaxRounds:     2,
-					RuleBasedOnly: true,
-				})
-				log.Printf("💤 Startup consolidation done: %d checked, %d superseded in %d rounds",
-					result.TotalChecked, result.TotalSuperseded, result.Rounds)
+				result, ran, err := consolidator.RunIfDirty()
+				if err != nil {
+					log.Printf("[warn] startup consolidation: %v", err)
+				} else if ran {
+					log.Printf("💤 Incremental startup consolidation done: %d checked, %d superseded, %d bigram and %d embedding comparisons (%d dimensions)",
+						result.TotalChecked, result.TotalSuperseded, result.BigramComparisons, result.EmbeddingComparisons, result.EmbeddingDimensions)
+				}
 
 				// Phase A: LLM-Destillation auf Learning-Clustern
 				extMu.Lock()
@@ -782,8 +829,6 @@ func Run(cfg Config) error {
 					log.Printf("💤 Cluster distillation done: %d clusters, %d distilled, %d superseded, %d skipped, %d errors",
 						dr.ClustersProcessed, dr.Distilled, dr.Superseded, dr.Skipped, dr.Errors)
 				}
-
-				lastConsolidation = time.Now()
 			}()
 		} else {
 			extMu.Lock()
@@ -998,13 +1043,14 @@ func Run(cfg Config) error {
 			atomic.AddInt32(&extractionActive, 1)
 			runBatchExtraction(ext, evo, store, ac, cl, ql, handler)
 			atomic.AddInt32(&extractionActive, -1)
-			// Rule-based consolidation after batch (1h cooldown)
-			if time.Since(lastConsolidation) > time.Hour {
-				result := extraction.RunConsolidation(store, nil, nil, extraction.ConsolidateConfig{MaxRounds: 2, RuleBasedOnly: true})
-				if result.TotalSuperseded > 0 {
-					log.Printf("  Batch consolidation: %d checked, %d superseded", result.TotalChecked, result.TotalSuperseded)
-				}
-				lastConsolidation = time.Now()
+			// The durable high-watermark makes unchanged calls free and the runner
+			// coalesces a concurrent startup pass into the same serialized run.
+			result, ran, err := consolidator.RunIfDirty()
+			if err != nil {
+				log.Printf("[warn] batch consolidation: %v", err)
+			} else if ran {
+				log.Printf("  Incremental batch consolidation: %d checked, %d superseded, %d bigram and %d embedding comparisons (%d dimensions)",
+					result.TotalChecked, result.TotalSuperseded, result.BigramComparisons, result.EmbeddingComparisons, result.EmbeddingDimensions)
 			}
 		}
 	}()
@@ -1221,6 +1267,11 @@ func regenerateBriefingsForTargets(store *storage.Store, cfg *config.Config, llm
 	}
 }
 
+// briefingInactivityThreshold: projects whose most recent session is older
+// than this are skipped by listProjectsNeedingBriefingRefresh. Saves LLM
+// refinement calls on long-dormant projects.
+const briefingInactivityThreshold = 30 * 24 * time.Hour
+
 func listProjectsNeedingBriefingRefresh(store *storage.Store, cfg *config.Config) ([]briefingRefreshTarget, error) {
 	projects, err := store.ListProjects()
 	if err != nil {
@@ -1231,6 +1282,18 @@ func listProjectsNeedingBriefingRefresh(store *storage.Store, cfg *config.Config
 
 	for _, project := range projects {
 		if project.ProjectShort == "" {
+			continue
+		}
+		// Dead-path filter: /tmp/* opencode session dirs and removed worktrees.
+		// Same predicate as the wiki-tick filter so the two loops agree.
+		if !isLiveProjectPath(project.ProjectShort) {
+			continue
+		}
+		// Inactivity filter: skip projects dormant longer than the threshold.
+		// Uses the sessions table's MAX(started_at); falls back to "include"
+		// when the timestamp can't be parsed so we fail open.
+		if last := projectLastActiveAt(context.Background(), store, project.ProjectShort); !last.IsZero() &&
+			time.Since(last) > briefingInactivityThreshold {
 			continue
 		}
 		// Lightweight change detection: compare DB fingerprint instead of

@@ -443,8 +443,8 @@ func (s *Store) GetSessionFlavorsSince(project string, since time.Time, limit in
 		}
 		results = append(results, map[string]any{
 			"session_flavor": flavor,
-			"created_at": createdAt,
-			"session_id": sessionID,
+			"created_at":     createdAt,
+			"session_id":     sessionID,
 		})
 	}
 	return results, nil
@@ -494,6 +494,49 @@ func (s *Store) GetActiveCategories() ([]string, error) {
 		}
 	}
 	return cats, rows.Err()
+}
+
+// GetMaxLearningID returns the current insertion high-watermark.
+func (s *Store) GetMaxLearningID() (int64, error) {
+	var id int64
+	if err := s.readerDB().QueryRow(`SELECT COALESCE(MAX(id), 0) FROM learnings`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("get max learning id: %w", err)
+	}
+	return id, nil
+}
+
+// GetConsolidationLearnings returns active learnings from only the canonical
+// project/category scopes touched in (afterID, throughID]. Existing learnings
+// in those scopes are included as comparison candidates.
+func (s *Store) GetConsolidationLearnings(afterID, throughID int64) ([]models.Learning, error) {
+	now := fmtTime(time.Now())
+	rows, err := s.readerDB().Query(`WITH dirty(category, project) AS (
+		SELECT DISTINCT category, COALESCE(NULLIF(canonical_project, ''), COALESCE(project, ''))
+		FROM learnings
+		WHERE id > ? AND id <= ? AND superseded_by IS NULL
+		AND (expires_at IS NULL OR expires_at > ?)
+		AND category NOT IN ('narrative', 'cap')
+	)
+	SELECT l.id, l.session_id, l.category, l.content, l.project, l.confidence,
+		l.superseded_by, l.supersede_reason, l.created_at, l.expires_at, l.model_used, l.source,
+		COALESCE(l.hit_count, 0), COALESCE(l.emotional_intensity, 0.0), l.last_hit_at, COALESCE(l.session_flavor, ''), l.valid_until, l.supersedes, COALESCE(l.importance, 3), l.supersede_status, COALESCE(l.noise_count, 0), COALESCE(l.fail_count, 0),
+		COALESCE(l.match_count, 0), COALESCE(l.inject_count, 0), COALESCE(l.use_count, 0), COALESCE(l.save_count, 0), COALESCE(l.stability, 30.0),
+		COALESCE(l.context, ''), COALESCE(l.domain, 'code'), COALESCE(l.trigger_rule, ''), COALESCE(l.embedding_text, ''),
+		COALESCE(l.source_file, ''), COALESCE(l.source_hash, ''), COALESCE(l.doc_chunk_ref, 0), COALESCE(l.task_type, ''), COALESCE(l.turns_at_creation, 0), COALESCE(l.origin_tool, ''), COALESCE(l.source_msg_from, -1), COALESCE(l.source_msg_to, -1),
+		COALESCE(l.canonical_project, ''),
+		COALESCE(l.attribution, ''),
+		COALESCE(l.staleness_score, 0.0), COALESCE(l.staleness_reason, ''), l.staleness_checked_at, COALESCE(l.staleness_type, ''), COALESCE(l.code_fingerprint, '')
+	FROM learnings l
+	JOIN dirty d ON d.category = l.category
+		AND d.project = COALESCE(NULLIF(l.canonical_project, ''), COALESCE(l.project, ''))
+	WHERE l.id <= ? AND l.superseded_by IS NULL
+	AND (l.expires_at IS NULL OR l.expires_at > ?)
+	ORDER BY l.category, l.canonical_project, l.project, l.id DESC`, afterID, throughID, now, throughID, now)
+	if err != nil {
+		return nil, fmt.Errorf("get consolidation learnings: %w", err)
+	}
+	defer rows.Close()
+	return scanLearnings(rows)
 }
 
 // GetActiveLearnings returns all non-superseded, non-expired learnings.
@@ -674,7 +717,15 @@ func (s *Store) GetLearning(id int64) (*models.Learning, error) {
 
 // GetLearningChain returns the full version history of a learning by traversing
 // the supersedes chain in both directions. The result is ordered oldest-first.
+//
+// Both loops carry a visited-set: if a row references itself (supersedes=id or
+// superseded_by=id) or forms a longer cycle, traversal terminates instead of
+// spinning forever. This is defense-in-depth against malformed rows; the
+// migration in schema.go nulls self-cycles on startup and SupersedeLearningBatch
+// rejects self-loops at write time.
 func (s *Store) GetLearningChain(id int64) ([]models.Learning, error) {
+	visited := map[int64]bool{id: true}
+
 	// Walk backward from id to root, collecting all ancestors.
 	// supersedes points to older version.
 	backIDs := []int64{id}
@@ -685,13 +736,16 @@ func (s *Store) GetLearningChain(id int64) ([]models.Learning, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get learning chain: traverse backward from %d: %w", id, err)
 		}
-		if supersedes == nil {
+		if supersedes == nil || *supersedes == cur || visited[*supersedes] {
+			// *supersedes == cur is the explicit self-loop short-circuit;
+			// visited[*supersedes] covers longer cycles. Both terminate safely.
 			break
 		}
+		visited[*supersedes] = true
 		backIDs = append(backIDs, *supersedes)
 		cur = *supersedes
 	}
-	// Walker forward from id to newest, collecting all descendants.
+	// Walk forward from id to newest, collecting all descendants.
 	// superseded_by points to newer version.
 	forwardIDs := []int64{}
 	cur = id
@@ -701,9 +755,12 @@ func (s *Store) GetLearningChain(id int64) ([]models.Learning, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get learning chain: traverse forward from %d: %w", id, err)
 		}
-		if supersededBy == nil {
+		if supersededBy == nil || *supersededBy == cur || visited[*supersededBy] {
+			// *supersededBy == cur is the explicit self-loop short-circuit;
+			// visited[*supersededBy] covers longer cycles. Both terminate safely.
 			break
 		}
+		visited[*supersededBy] = true
 		forwardIDs = append(forwardIDs, *supersededBy)
 		cur = *supersededBy
 	}
@@ -977,10 +1034,16 @@ func (s *Store) SupersedeLearningBatch(ids []int64, supersededByID int64, reason
 		return nil
 	}
 
-	// Cycle detection: skip any ID where the winner is already in the loser's chain.
+	// Cycle detection: skip any ID where the winner is already in the loser's chain,
+	// or where winner == loser (self-supersede is semantically meaningless and would
+	// create a self-loop that breaks GetLearningChain traversal).
 	if supersededByID > 0 {
 		filtered := make([]int64, 0, len(ids))
 		for _, id := range ids {
+			if id == supersededByID {
+				log.Printf("warn: supersede self-loop rejected: %d -> %d, skipping", id, supersededByID)
+				continue
+			}
 			if s.isInSupersededChain(supersededByID, id) {
 				log.Printf("warn: supersede cycle detected: %d -> %d -> ... -> %d, skipping", id, supersededByID, id)
 				continue

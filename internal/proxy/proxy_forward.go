@@ -17,14 +17,24 @@ import (
 	"github.com/LNDCAI001/yesmem/internal/proxyext"
 )
 
+// maybeDumpRequestBody writes the request body to <dataDir>/logs/req_<idx>_body.json
+// only when YESMEM_PROXY_DEBUG=1. Mirrors the guard at proxy.go:865 and proxy.go:1789.
+// No-op when the env var is unset, set to anything other than "1", or dataDir is empty.
+func maybeDumpRequestBody(dataDir string, reqIdx int, body []byte) {
+	debugOn := os.Getenv("YESMEM_PROXY_DEBUG") == "1" || os.Getenv("YESMEM_DUMP_REQUESTS") == "1"
+	if !debugOn || dataDir == "" {
+		return
+	}
+	debugPath := filepath.Join(dataDir, "logs", fmt.Sprintf("req_%d_body.json", reqIdx))
+	os.WriteFile(debugPath, body, 0644)
+}
+
 // forwardWithAnnotation forwards the request and extracts annotations from the SSE response.
 func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Request, body []byte, reqIdx int, toolUseIDs []string, proj string, threadID string, msgCount int, estimatedTokens ...int) {
-	// Debug: dump request body to file.
-	// Gate: only when YESMEM_DUMP_REQUESTS=1, default OFF.
-	if os.Getenv("YESMEM_DUMP_REQUESTS") == "1" && s.cfg.DataDir != "" {
-		debugPath := filepath.Join(s.cfg.DataDir, "logs", fmt.Sprintf("req_%d_body.json", reqIdx))
-		_ = os.WriteFile(debugPath, body, 0644)
-	}
+	// Debug: dump request body to file for inspection.
+	// Gate: either YESMEM_DUMP_REQUESTS=1 (fork name) or YESMEM_PROXY_DEBUG=1
+	// (upstream name) enables it, so neither pre-merge trigger regresses.
+	maybeDumpRequestBody(s.cfg.DataDir, reqIdx, body)
 
 	targetURL := s.resolveAnthropicTarget(extractModelFromBody(body)) + origReq.URL.RequestURI()
 
@@ -146,6 +156,10 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 			return
 		}
 		w.Write(bodyBytes)
+
+		if resp.StatusCode != 200 && len(bodyBytes) > 0 {
+			s.logger.Printf("%s[req %d tid=%s] upstream %d: %s%s", colorRed, reqIdx, threadID, resp.StatusCode, truncateBytes(bodyBytes, 500), colorReset)
+		}
 
 		if threadID != "" {
 			go s.trackStreamState(threadID, false, int64(len(bodyBytes)), isSub, proj)

@@ -17,6 +17,17 @@ import (
 	"github.com/LNDCAI001/yesmem/internal/proxyext"
 )
 
+// allowedBetaHeaders is the set of anthropic-beta flags let through despite
+// the general strip below. Only add a flag here once its billing behavior
+// (plan-limit vs extra-usage) has actually been verified live, not assumed.
+// Verified 2026-08-03: advisor-tool-2026-03-01 bills at normal per-token
+// model rates (LiteLLM's advisor integration + DecodeTheFuture writeup);
+// extra-usage billing is governed by OAuth-vs-API-key auth and specific
+// modes like 1M context, not by the mere presence of a beta header.
+var allowedBetaHeaders = map[string]bool{
+	"advisor-tool-2026-03-01": true,
+}
+
 // maybeDumpRequestBody writes the request body to <dataDir>/logs/req_<idx>_body.json
 // only when YESMEM_PROXY_DEBUG=1. Mirrors the guard at proxy.go:865 and proxy.go:1789.
 // No-op when the env var is unset, set to anything other than "1", or dataDir is empty.
@@ -57,13 +68,36 @@ func (s *Server) forwardWithAnnotation(w http.ResponseWriter, origReq *http.Requ
 	proxyReq.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	proxyReq.Header.Del("Connection")
 	proxyReq.Header.Del("Accept-Encoding") // Force uncompressed for SSE parsing
-	// Strip beta headers: forwarded to the official Anthropic API, any
-	// anthropic-beta / x-anthropic-beta header makes Anthropic bill the
-	// request as "extra usage" against overage credit (empty on a fresh
-	// account) instead of the included subscription, causing 429
-	// out_of_credits. Matches Meridian v1.28.0. See rynfar/meridian#278.
+	// Allowlist beta headers instead of blanket-stripping them.
+	// Original rationale (2026-07-13, c9459a2): stripping ALL anthropic-beta
+	// headers avoids a class of extra-usage/overage billing seen via
+	// rynfar/meridian#278. Blanket stripping also silently breaks any
+	// beta-gated CLI feature (advisor-tool-2026-03-01, 1M-context, etc) -
+	// the CLI believes the feature is active and shows accounting for it
+	// (e.g. context-window %) while Anthropic actually serves the
+	// non-beta path, producing confusing mismatches and, for tool-only
+	// betas like advisor, an outright 400 (unrecognized tool type).
+	// Corrected 2026-08-03: keep known-safe/expected beta flags, strip
+	// everything else (unknown betas retain the original overage-billing
+	// protection this code existed for).
 	proxyReq.Header.Del("anthropic-beta")
 	proxyReq.Header.Del("x-anthropic-beta")
+	for _, hdrName := range []string{"anthropic-beta", "x-anthropic-beta"} {
+		if vals, ok := origReq.Header[http.CanonicalHeaderKey(hdrName)]; ok {
+			var kept []string
+			for _, v := range vals {
+				for _, flag := range strings.Split(v, ",") {
+					flag = strings.TrimSpace(flag)
+					if allowedBetaHeaders[flag] {
+						kept = append(kept, flag)
+					}
+				}
+			}
+			if len(kept) > 0 {
+				proxyReq.Header.Set(hdrName, strings.Join(kept, ","))
+			}
+		}
+	}
 
 	// ── SMM ACCOUNT POOL GATE ─────────────────────────────────────────────────
 	// When SMM is active and the account pool is enabled, delegate the entire
@@ -516,13 +550,36 @@ func (s *Server) forwardRaw(w http.ResponseWriter, origReq *http.Request, body [
 	proxyReq.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	proxyReq.Header.Del("Connection")
 	proxyReq.Header.Del("Accept-Encoding") // Force uncompressed for SSE parsing
-	// Strip beta headers: forwarded to the official Anthropic API, any
-	// anthropic-beta / x-anthropic-beta header makes Anthropic bill the
-	// request as "extra usage" against overage credit (empty on a fresh
-	// account) instead of the included subscription, causing 429
-	// out_of_credits. Matches Meridian v1.28.0. See rynfar/meridian#278.
+	// Allowlist beta headers instead of blanket-stripping them.
+	// Original rationale (2026-07-13, c9459a2): stripping ALL anthropic-beta
+	// headers avoids a class of extra-usage/overage billing seen via
+	// rynfar/meridian#278. Blanket stripping also silently breaks any
+	// beta-gated CLI feature (advisor-tool-2026-03-01, 1M-context, etc) -
+	// the CLI believes the feature is active and shows accounting for it
+	// (e.g. context-window %) while Anthropic actually serves the
+	// non-beta path, producing confusing mismatches and, for tool-only
+	// betas like advisor, an outright 400 (unrecognized tool type).
+	// Corrected 2026-08-03: keep known-safe/expected beta flags, strip
+	// everything else (unknown betas retain the original overage-billing
+	// protection this code existed for).
 	proxyReq.Header.Del("anthropic-beta")
 	proxyReq.Header.Del("x-anthropic-beta")
+	for _, hdrName := range []string{"anthropic-beta", "x-anthropic-beta"} {
+		if vals, ok := origReq.Header[http.CanonicalHeaderKey(hdrName)]; ok {
+			var kept []string
+			for _, v := range vals {
+				for _, flag := range strings.Split(v, ",") {
+					flag = strings.TrimSpace(flag)
+					if allowedBetaHeaders[flag] {
+						kept = append(kept, flag)
+					}
+				}
+			}
+			if len(kept) > 0 {
+				proxyReq.Header.Set(hdrName, strings.Join(kept, ","))
+			}
+		}
+	}
 
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {

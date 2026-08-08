@@ -228,7 +228,6 @@ func (s *StateStore) RecordQuotaHit(name string, cooldown time.Duration) {
 	st.Status = StatusCooldown
 	st.CooldownUntil = time.Now().Add(cooldown)
 	st.LastQuotaHitAt = time.Now()
-	st.ConsecutiveFails++
 }
 
 // RecordAuthError marks the account as having had an auth error.

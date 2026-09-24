@@ -125,8 +125,7 @@ func (c *CLIClient) runClaude(ctx context.Context, system, userMsg string, schem
 		budgetFlag = fmt.Sprintf(" --max-budget-usd %.2f", c.MaxBudgetPerCall)
 	}
 
-	fmt.Fprintf(scriptFile, "#!/bin/sh\nunset ANTHROPIC_BASE_URL CLAUDECODE CLAUDE_CODE_ENTRYPOINT\nexec %s -p --model %s --system-prompt-file %s --max-turns 1 --no-session-persistence --output-format json%s --tools= --mcp-config '{\"mcpServers\":{}}' --strict-mcp-config < %s\n",
-		c.binary, c.cliModelName(), sysFile.Name(), budgetFlag, msgFile.Name())
+	fmt.Fprint(scriptFile, buildCLIScript(c.binary, c.cliModelName(), sysFile.Name(), budgetFlag, msgFile.Name()))
 	scriptFile.Close()
 	os.Chmod(scriptFile.Name(), 0755)
 
@@ -547,4 +546,13 @@ func homeDir() string {
 		return ""
 	}
 	return h
+}
+
+// buildCLIScript renders the /bin/sh wrapper for one extraction call.
+// --safe-mode keeps OAuth subscription auth but skips the user settings hooks,
+// CLAUDE.md, skills and MCP. Without it every extraction call ran settings.json
+// hooks (briefing-hook, LifeOS SessionStart/End) and injected large context per call.
+func buildCLIScript(binary, model, sysPath, budgetFlag, msgPath string) string {
+	return fmt.Sprintf("#!/bin/sh\nunset ANTHROPIC_BASE_URL CLAUDECODE CLAUDE_CODE_ENTRYPOINT\nexec %s -p --safe-mode --model %s --system-prompt-file %s --max-turns 1 --no-session-persistence --output-format json%s --tools= --mcp-config '{\"mcpServers\":{}}' --strict-mcp-config < %s\n",
+		binary, model, sysPath, budgetFlag, msgPath)
 }

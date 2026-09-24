@@ -156,6 +156,11 @@ func SMMForwardWithRetry(
 			}
 		}
 
+		// Persist the rate-limit snapshot exactly like the stock path does. Before
+		// this, the SMM path never refreshed it, so the daemon extraction throttle
+		// read a frozen 99% snapshot from 2026-07-10 for months.
+		persistSMMRateLimits(s, resp.Header)
+
 		// BytesFlushed must be set before WriteHeader — the dispatcher uses it
 		// as a categorical gate to block any post-WriteHeader retry attempt.
 		fc.BytesFlushed = true
@@ -264,4 +269,21 @@ func cloneForAttempt(ctx context.Context, base *http.Request, origBody []byte) (
 	cloned.Header.Del("anthropic-beta")
 	cloned.Header.Del("x-anthropic-beta")
 	return cloned, nil
+}
+
+// persistSMMRateLimits hands the winning response's rate-limit headers to the
+// daemon (proxy_state "rate_limits"), mirroring the stock forward path.
+func persistSMMRateLimits(s *Server, h http.Header) {
+	if s == nil {
+		return
+	}
+	rl := ParseRateLimitHeaders(h)
+	if rl == nil {
+		return
+	}
+	b, err := json.Marshal(rl)
+	if err != nil {
+		return
+	}
+	go s.queryDaemon("_persist_rate_limits", map[string]any{"rate_limits": string(b)})
 }

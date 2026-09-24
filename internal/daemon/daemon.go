@@ -551,25 +551,10 @@ func Run(cfg Config) error {
 		// Throttle function: blocks LLM calls when API utilization exceeds 50%
 		throttleFn := func() bool {
 			rlJSON, err := store.GetProxyState("rate_limits")
-			if err != nil || rlJSON == "" {
+			if err != nil {
 				return false
 			}
-			var rl struct {
-				Unified5hUtilization float64 `json:"unified_5h_utilization"`
-				TokensLimit          int     `json:"tokens_limit"`
-				TokensRemaining      int     `json:"tokens_remaining"`
-				IsSubscription       bool    `json:"is_subscription"`
-			}
-			if json.Unmarshal([]byte(rlJSON), &rl) != nil {
-				return false
-			}
-			var utilization float64
-			if rl.IsSubscription {
-				utilization = rl.Unified5hUtilization
-			} else if rl.TokensLimit > 0 {
-				utilization = 1.0 - float64(rl.TokensRemaining)/float64(rl.TokensLimit)
-			}
-			return utilization > 0.5
+			return rateLimitThrottled(rlJSON, time.Now())
 		}
 		if client != nil && extractTracker != nil {
 			bc := extraction.NewBudgetClient(client, extractTracker)
@@ -1008,26 +993,10 @@ func Run(cfg Config) error {
 			if pending == 0 {
 				continue
 			}
-			// Throttle extraction when API utilization is high
-			if rlJSON, err := store.GetProxyState("rate_limits"); err == nil && rlJSON != "" {
-				var rl struct {
-					Unified5hUtilization float64 `json:"unified_5h_utilization"`
-					TokensLimit          int     `json:"tokens_limit"`
-					TokensRemaining      int     `json:"tokens_remaining"`
-					IsSubscription       bool    `json:"is_subscription"`
-				}
-				if json.Unmarshal([]byte(rlJSON), &rl) == nil {
-					var utilization float64
-					if rl.IsSubscription {
-						utilization = rl.Unified5hUtilization
-					} else if rl.TokensLimit > 0 {
-						utilization = 1.0 - float64(rl.TokensRemaining)/float64(rl.TokensLimit)
-					}
-					if utilization > 0.5 {
-						log.Printf("━━━ Extraction deferred: utilization %.0f%% (threshold 50%%) ━━━", utilization*100)
-						continue
-					}
-				}
+			// Throttle extraction when API utilization is high (fresh snapshots only)
+			if rlJSON, err := store.GetProxyState("rate_limits"); err == nil && rateLimitThrottled(rlJSON, time.Now()) {
+				log.Println("━━━ Extraction deferred: fresh 5h utilization above 50% ━━━")
+				continue
 			}
 			extMu.Lock()
 			ext := extractor

@@ -1526,6 +1526,26 @@ paths:
   claude_projects: ~/.claude/projects
   opencode_db: ~/.local/share/opencode/opencode.db
 
+# --- Extra Session Sources (optional) ---
+# Additional per-project Claude Code session directories to index and watch,
+# e.g. other Claude Code profile dirs (~/.claude-<name>/projects/<project>).
+# session_sources:
+#   - /path/to/.claude-other/projects/<project>
+
+# --- SMM Account Pool (optional, fork) ---
+# Rotates proxy traffic across several Claude Code OAuth logins. Each account
+# points at a Claude Code config dir holding .credentials.json. The proxy does
+# not refresh tokens itself; accounts with expired tokens are skipped.
+# smm:
+#   enabled: false
+#   account_pool:
+#     enabled: false
+#     max_prestream_retries: 2
+#     cooldown_seconds_after_429: 300   # 0 = default 300s, negative = no cooldown
+#     accounts:
+#       - name: main
+#         credential_dir: ~/.claude/
+
 # --- Indexer ---
 # Directories excluded from session indexing.
 exclude_projects: []

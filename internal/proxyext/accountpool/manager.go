@@ -101,6 +101,25 @@ func isoOrNever(t time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
+// defaultQuotaCooldown applies after a 429 when cooldown_seconds_after_429 is unset.
+const defaultQuotaCooldown = 5 * time.Minute
+
+// expiredRecheck is how long an account with an expired stored token is parked
+// before its credential file is re-read (the host may have refreshed it).
+const expiredRecheck = 2 * time.Minute
+
+// quotaCooldown maps the configured seconds to a duration: 0 = default, <0 = none.
+func quotaCooldown(seconds int) time.Duration {
+	switch {
+	case seconds < 0:
+		return 0
+	case seconds == 0:
+		return defaultQuotaCooldown
+	default:
+		return time.Duration(seconds) * time.Second
+	}
+}
+
 // NewPool creates an active account pool. Returns (nil, nil) when disabled or
 // when no accounts are configured — callers treat a nil Pool as noop.
 func NewPool(cfg Config, logger *log.Logger) (*Pool, error) {
@@ -127,9 +146,11 @@ func NewPool(cfg Config, logger *log.Logger) (*Pool, error) {
 	if logger == nil {
 		logger = log.Default()
 	}
-	// CooldownSeconds=0 means no cooldown — rotate immediately.
-	// A positive value sets the cooldown duration after a 429.
-	cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
+	// Cooldown after a 429. Unset (0) previously meant "no cooldown", which left
+	// the exhausted account instantly available again, so the sticky selector
+	// retried the SAME account and never rotated (proxy.log 2026-08-06). Unset now
+	// means defaultQuotaCooldown; a negative value explicitly disables cooldown.
+	cooldown := quotaCooldown(cfg.CooldownSeconds)
 	pool := &Pool{
 		cfg:      cfg,
 		sel:      NewRoundRobinSelector(cfg.Accounts, cooldown),
@@ -166,6 +187,15 @@ func (p *Pool) SelectAndGetToken(ctx context.Context, meta RequestMeta) (Account
 		// Token load failed — mark the account so Select skips it next round.
 		p.sel.MarkResult(AccountResult{Account: acc, ClassifiedFailure: FailureTokenInvalid})
 		return AccountRef{}, TokenResult{}, fmt.Errorf("accountpool: token load for %q: %w", acc.Name, err)
+	}
+	// The proxy never refreshes OAuth tokens itself (host Claude Code does), so a
+	// token already past expiry can only yield 401s. Park the account and try the
+	// next one instead of spending a pre-stream retry on a guaranteed failure.
+	if !tok.ExpiresAt.IsZero() && time.Now().After(tok.ExpiresAt) {
+		p.sel.store.RecordExpired(acc.Name, expiredRecheck)
+		p.logger.Printf("[accountpool] smm_account_skipped=%q reason=token_expired expired_at=%s",
+			acc.Name, tok.ExpiresAt.Format(time.RFC3339))
+		return p.SelectAndGetToken(ctx, meta)
 	}
 	p.logger.Printf("[accountpool] smm_account_selected=%q", acc.Name)
 

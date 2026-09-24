@@ -271,3 +271,17 @@ func (s *StateStore) RecordEntitlementError(name string, cooldown time.Duration,
 		st.Status = StatusHardFailed
 	}
 }
+
+// RecordExpired parks an account whose stored OAuth token is already expired.
+// It is not counted as a failure: the account recovers as soon as the host
+// refreshes .credentials.json and the recheck window passes.
+func (s *StateStore) RecordExpired(name string, recheck time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.states[name]
+	if !ok {
+		return
+	}
+	st.Status = StatusCooldown
+	st.CooldownUntil = time.Now().Add(recheck)
+}

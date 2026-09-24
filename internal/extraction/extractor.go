@@ -101,6 +101,8 @@ func (e *Extractor) ExtractFromSession(sessionID string, msgs []models.Message) 
 	chunks := ChunkMessages(msgs, 25000)
 
 	var allLearnings []models.Learning
+	var lastLLMErr error
+	llmSucceeded := false
 	for i, chunk := range chunks {
 		// Pause between chunks (Haiku: ~60 req/min limit)
 		if i > 0 {
@@ -116,12 +118,14 @@ func (e *Extractor) ExtractFromSession(sessionID string, msgs []models.Message) 
 		response, err := e.client.CompleteJSON(BuildExtractionSystemPrompt(), content, ExtractionSchema())
 		if err != nil {
 			log.Printf("warn: extraction chunk %d/%d for %s: %v", chunk.Index+1, chunk.Total, sessionID, err)
+			lastLLMErr = err
 			if strings.Contains(err.Error(), "rate_limit") {
 				log.Printf("  Rate limited on chunk — waiting 60s")
 				time.Sleep(60 * time.Second)
 			}
 			continue
 		}
+		llmSucceeded = true
 
 		// Structured output guarantees valid JSON — parse directly
 		if strings.TrimSpace(response) == "" {
@@ -143,6 +147,12 @@ func (e *Extractor) ExtractFromSession(sessionID string, msgs []models.Message) 
 		allLearnings = append(allLearnings, learnings...)
 	}
 
+	// If no LLM call succeeded, the session was not actually extracted. Returning
+	// nil here made the daemon mark it done with 0 learnings, so it was never
+	// retried (e.g. every call failing on an expired CLI login).
+	if !llmSucceeded && lastLLMErr != nil {
+		return nil, fmt.Errorf("extraction: all %d chunk(s) failed for %s: %w", len(chunks), truncID(sessionID), lastLLMErr)
+	}
 	return allLearnings, nil
 }
 

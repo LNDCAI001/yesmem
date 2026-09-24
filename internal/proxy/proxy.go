@@ -284,7 +284,10 @@ func Run(cfg Config) error {
 				MaxIdleConns:          10,
 				IdleConnTimeout:       90 * time.Second,
 				DisableCompression:    true,
-				ResponseHeaderTimeout: 60 * time.Second,
+				// Muss über dem Gateway-Request-Timeout (300s) liegen dürfen:
+			// PDF-Kaltkonvertierung (docling OCR) läuft im Pre-Call-Hook,
+			// bevor der erste Response-Header kommt — beobachtet bis ~96s.
+			ResponseHeaderTimeout: 5 * time.Minute,
 			},
 		},
 		logger:                createLogger(cfg.DataDir),
@@ -714,6 +717,13 @@ func (s *Server) queryDaemon(method string, params map[string]any) (json.RawMess
 	if s.cfg.DataDir == "" {
 		return nil, fmt.Errorf("no data dir configured")
 	}
+	// A bare basename resolves on the daemon side only by luck: once two
+	// indexed projects share it, resolution is refused and the call returns
+	// empty. Make that visible here instead of at the call site.
+	if name, bad := relativeProjectParam(params); bad {
+		s.logger.Printf("%s[daemon] WARN: %s sent relative project %q — expected absolute path%s",
+			colorOrange, method, name, colorReset)
+	}
 	sockPath := filepath.Join(s.cfg.DataDir, "daemon.sock")
 
 	// On cold start (daemon not yet confirmed ready), retry longer to survive daemon restart
@@ -853,6 +863,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		threadID = DeriveThreadID(req)
 	}
 	proj := extractProjectName(req)
+	// projPath is what goes to the daemon; proj stays the short log/display form.
+	projPath := extractProjectPath(req)
 	model, _ := req["model"].(string)
 
 	// Persist current model under session-keyed proxy_state so handleWhoami
@@ -1039,7 +1051,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	if s.cfg.PromptPatternSuggest && proj != "" {
 		patternMsgs, _ := req["messages"].([]any)
-		detectReplPatternSuggestion(patternMsgs, proj, s.queryDaemon)
+		detectReplPatternSuggestion(patternMsgs, daemonProject(proj, projPath), s.queryDaemon)
 	}
 
 	// Turn-sequence recording: hash tool types from previous assistant turn, send to daemon
@@ -1048,7 +1060,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			if turnHash, toolNames := computeTurnHashFromMessages(msgs); turnHash != "" {
 				go s.queryDaemon("record_turn_sequence", map[string]any{
 					"thread_id":     threadID,
-					"project":       proj,
+					"project":       daemonProject(proj, projPath),
 					"turn_hash":     turnHash,
 					"example_tools": toolNames,
 				})
@@ -1089,7 +1101,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Increment project turn counter (async, non-blocking, skip on retries)
 	if !isRetryReq {
-		turnProject := proj
+		turnProject := daemonProject(proj, projPath)
 		if turnProject == "" {
 			turnProject = "__global__"
 		}
@@ -1167,12 +1179,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 		// Signal 4: Knowledge Gaps
 		for _, topic := range signals.GapTopics {
-			go s.queryDaemon("track_gap", map[string]any{"topic": topic, "project": proj})
+			go s.queryDaemon("track_gap", map[string]any{"topic": topic, "project": daemonProject(proj, projPath)})
 		}
 
 		// Signal 3: Contradictions
 		for _, desc := range signals.Contradictions {
-			go s.queryDaemon("flag_contradiction", map[string]any{"description": desc, "project": proj, "thread_id": threadID})
+			go s.queryDaemon("flag_contradiction", map[string]any{"description": desc, "project": daemonProject(proj, projPath), "thread_id": threadID})
 		}
 
 		if len(confirmedUsed) > 0 || len(signals.GapTopics) > 0 || len(signals.Contradictions) > 0 {
@@ -1186,7 +1198,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		workdir := extractWorkingDirectory(req)
 		s.logger.Printf("[req %d %s tid=%s] git commit detected: %s %s", reqIdx, proj, threadID, ci.Hash, ci.Message)
 		go s.queryDaemon("invalidate_on_commit", map[string]any{
-			"hash": ci.Hash, "project": proj, "workdir": workdir,
+			"hash": ci.Hash, "project": daemonProject(proj, projPath), "workdir": workdir,
 		})
 	}
 
@@ -1212,7 +1224,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Task #4: Subagent detection — skip all proxy logic for short conversations
 	if isSubagent(messages, req) {
 		// Inject docs hint for subagents if reference docs are indexed
-		if hint := s.getDocsHint(proj); hint != "" {
+		if hint := s.getDocsHint(daemonProject(proj, projPath)); hint != "" {
 			modified := injectDocsHintForSubagent(messages, hint)
 			req["messages"] = modified
 			if newBody, err := json.Marshal(req); err == nil {
@@ -1222,7 +1234,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.logger.Printf("%s[req %d %s tid=%s] %d messages (subagent, passthrough)%s", colorOrange, reqIdx, proj, threadID, len(messages), colorReset)
 		}
-		s.forwardWithAnnotation(w, r, body, reqIdx, toolUseIDs, proj, threadID, msgCount)
+		s.forwardWithAnnotation(w, r, body, reqIdx, toolUseIDs, proj, projPath, threadID, msgCount)
 		return
 	}
 
@@ -1307,7 +1319,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 				// Run full stub pipeline
 				s.setRawEstimate(threadID, totalTokens)
-				_ = s.runStubCycle(messages, req, reqIdx, proj, threadID, overhead, totalTokens, userQuery, isRetryReq)
+				_ = s.runStubCycle(messages, req, reqIdx, proj, projPath, threadID, overhead, totalTokens, userQuery, isRetryReq)
 
 				// Freeze the result
 				finalMessages, _ := req["messages"].([]any)
@@ -1353,7 +1365,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// Legacy path: progressive decay
 		if s.shouldStub(totalTokens, model) {
 			s.setRawEstimate(threadID, totalTokens)
-			_ = s.runStubCycle(messages, req, reqIdx, proj, threadID, overhead, totalTokens, userQuery, isRetryReq)
+			_ = s.runStubCycle(messages, req, reqIdx, proj, projPath, threadID, overhead, totalTokens, userQuery, isRetryReq)
 			needsReserialization = true
 		}
 	}
@@ -1430,7 +1442,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Docs hint: inject docs-available reminder if interval fires
-				if docsHint := s.docsHintInject(threadID, totalTokens, proj); docsHint != "" {
+				if docsHint := s.docsHintInject(threadID, totalTokens, daemonProject(proj, projPath)); docsHint != "" {
 					entry.DocsHint = docsHint
 					s.logger.Printf("%s[req %d %s tid=%s] docs hint stashed (cached via TimestampMeta)%s", colorBlue, reqIdx, proj, threadID, colorReset)
 				}
@@ -1448,7 +1460,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Associative context injection (for ALL requests, not just stubbed ones)
 	// Re-enabled with higher thresholds (55/75, max 1) after disabling Fresh Remember.
-	assocContext := s.findAssociativeContextFor(userQuery, proj, threadID, messages)
+	assocContext := s.findAssociativeContextFor(userQuery, daemonProject(proj, projPath), threadID, messages)
 	if assocContext != "" {
 		currentMessages, _ := req["messages"].([]any)
 		if currentMessages == nil {
@@ -1460,7 +1472,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Doc-chunk context injection: separate search path for indexed docs (not skills)
-	docContext := s.findDocContextFor(userQuery, proj, messages)
+	docContext := s.findDocContextFor(userQuery, daemonProject(proj, projPath), messages)
 	if docContext != "" {
 		currentMessages, _ := req["messages"].([]any)
 		if currentMessages == nil {
@@ -1480,12 +1492,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	var remItems []recentLearningItem
 
 	// Rules re-injection: inject condensed CLAUDE.md rules every ~40k output tokens
-	if rulesBlock := s.rulesInject(threadID, totalTokens, proj); rulesBlock != "" {
+	if rulesBlock := s.rulesInject(threadID, totalTokens, daemonProject(proj, projPath)); rulesBlock != "" {
 		currentMessages, _ := req["messages"].([]any)
 		if currentMessages == nil {
 			currentMessages = messages
 		}
-		req["messages"] = injectAssociativeContext(currentMessages, s.formatRulesReminder(rulesBlock, proj, false), s.cfg.SawtoothEnabled)
+		req["messages"] = injectAssociativeContext(currentMessages, s.formatRulesReminder(rulesBlock, daemonProject(proj, projPath), false), s.cfg.SawtoothEnabled)
 		needsReserialization = true
 		s.logger.Printf("%s[req %d %s tid=%s] rules reminder injected%s", colorBlue, reqIdx, proj, threadID, colorReset)
 	}
@@ -1526,7 +1538,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Skill eval injection: mandatory evaluation instruction for real user input only
 	if threadID != "" && proj != "" && isUserInputTurn(messages) {
 		// First: detect any skill activations from message history (updates tracker)
-		s.syncSkillActivations(messages, proj, threadID)
+		s.syncSkillActivations(messages, daemonProject(proj, projPath), threadID)
 
 		// Inject mandatory skill evaluation block into last user message
 		skillEval := buildSkillEvalBlock(s.cfg.SkillEvalInject)
@@ -1637,7 +1649,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 		// Dialog injection: append at end of messages with pseudo-padding for alternation.
 		// Always works regardless of tool_result chains or conversation state.
-		dr := s.checkDialogMessages(threadID, proj)
+		dr := s.checkDialogMessages(threadID, daemonProject(proj, projPath))
 		if dr.Extra != "" {
 			// Prepend session ID for agent-to-agent communication
 			dr.Extra = fmt.Sprintf("DEINE_SESSION_ID: %s\n", threadID) + dr.Extra
@@ -1796,7 +1808,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Early-out: skip re-serialization when nothing changed
 	if !needsReserialization {
 		s.logger.Printf("%s[req %d %s tid=%s] %d messages, ~%dk tokens (no stubbing, threshold=%dk)%s", colorDim, reqIdx, proj, threadID, len(messages), totalTokens/1000, s.effectiveTokenThreshold(model)/1000, colorReset)
-		s.forwardWithAnnotation(w, r, body, reqIdx, toolUseIDs, proj, threadID, msgCount, totalTokens)
+		s.forwardWithAnnotation(w, r, body, reqIdx, toolUseIDs, proj, projPath, threadID, msgCount, totalTokens)
 		return
 	}
 
@@ -1836,7 +1848,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if raw := s.getRawEstimate(threadID); raw > 0 {
 		s.cacheStatusWriter.UpdateRawForThread(threadID, raw)
 	}
-	s.forwardWithAnnotation(w, r, body, reqIdx, toolUseIDs, proj, threadID, msgCount, finalEstimate)
+	s.forwardWithAnnotation(w, r, body, reqIdx, toolUseIDs, proj, projPath, threadID, msgCount, finalEstimate)
 }
 
 // getPromptFlags resolves the effective prompt flags for a profile, falling back

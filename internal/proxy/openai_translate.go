@@ -107,6 +107,53 @@ func translateMessages(msgs []OpenAIMessage) ([]any, error) {
 
 		switch m.Role {
 		case "user":
+			// Check for image_url / file blocks in content array — must be preserved
+			// as structured blocks, not flattened to string by openAIContentText.
+			// file blocks (PDF & Co. from opencode/AI-SDK) ride along untouched;
+			// the LiteLLM gateway's docling_hook converts them to Markdown.
+			if contentArr, ok := m.Content.([]any); ok {
+				hasImage, hasFile := false, false
+				for _, block := range contentArr {
+					if bm, ok := block.(map[string]any); ok {
+						if bm["type"] == "image_url" {
+							hasImage = true
+						}
+						if bm["type"] == "file" {
+							hasFile = true
+						}
+					}
+				}
+				if hasImage || hasFile {
+					var blocks []any
+					for _, block := range contentArr {
+						bm, ok := block.(map[string]any)
+						if !ok {
+							continue
+						}
+						switch bm["type"] {
+						case "text":
+							if text, _ := bm["text"].(string); text != "" {
+								blocks = append(blocks, map[string]any{"type": "text", "text": text})
+							}
+						case "image_url":
+							if img := translateOpenAIImageToAnthropic(bm); img != nil {
+								blocks = append(blocks, img)
+							}
+						case "file":
+							blocks = append(blocks, map[string]any{"type": "file", "file": bm["file"]})
+						}
+					}
+					if len(blocks) == 0 {
+						blocks = append(blocks, map[string]any{"type": "text", "text": ""})
+					}
+					result = append(result, map[string]any{
+						"role":    "user",
+						"content": blocks,
+					})
+					continue
+				}
+			}
+
 			// Check for tool_result blocks in content array (opencode format).
 			if contentArr, ok := m.Content.([]any); ok {
 				hasToolResult := false
@@ -229,4 +276,44 @@ func translateMessages(msgs []OpenAIMessage) ([]any, error) {
 	}
 
 	return result, nil
+}
+
+// translateOpenAIImageToAnthropic converts an OpenAI image_url content part
+// to an Anthropic image block. Handles both data URIs (base64) and external URLs.
+func translateOpenAIImageToAnthropic(block map[string]any) map[string]any {
+	imgURL, _ := block["image_url"].(map[string]any)
+	if imgURL == nil {
+		return nil
+	}
+	url, _ := imgURL["url"].(string)
+	if url == "" {
+		return nil
+	}
+	// data:image/png;base64,<data> → source:{type:"base64", media_type, data}
+	if strings.HasPrefix(url, "data:") {
+		// Format: data:<media_type>;base64,<data>
+		comma := strings.Index(url, ",")
+		if comma < 0 {
+			return nil
+		}
+		meta := url[5:comma] // strip "data:" prefix, stop at ","
+		data := url[comma+1:]
+		mediaType := strings.SplitN(meta, ";", 2)[0]
+		return map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": mediaType,
+				"data":       data,
+			},
+		}
+	}
+	// External URL → source:{type:"url", url}
+	return map[string]any{
+		"type": "image",
+		"source": map[string]any{
+			"type": "url",
+			"url":  url,
+		},
+	}
 }

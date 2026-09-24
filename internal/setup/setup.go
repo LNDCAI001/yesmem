@@ -1641,34 +1641,32 @@ func translateStrings(dataDir, langCode, apiKey, model, provider string) error {
 	return briefing.SaveStrings(filepath.Join(dataDir, "strings.yaml"), translated)
 }
 
-func setupSystemd(home, binaryPath string) error {
-	serviceDir := filepath.Join(home, ".config", "systemd", "user")
-	os.MkdirAll(serviceDir, 0755)
-
-	// Daemon unit
-	daemonUnit := fmt.Sprintf(`[Unit]
+// buildDaemonUnit renders the systemd user unit for the daemon. Both services
+// are local-first (Unix socket, SQLite, index) and must not be delayed by
+// network-online.target — net-dependent work happens asynchronously after start.
+func buildDaemonUnit(binaryPath, display, xauth, dbus string) string {
+	return fmt.Sprintf(`[Unit]
 Description=YesMem — Long-term memory for coding agents
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=%s daemon --replace
 Restart=always
 RestartSec=10
+Environment="DISPLAY=%s"
+Environment="XAUTHORITY=%s"
+Environment="DBUS_SESSION_BUS_ADDRESS=%s"
 
 [Install]
 WantedBy=default.target
-`, binaryPath)
-	if err := os.WriteFile(filepath.Join(serviceDir, "yesmem.service"), []byte(daemonUnit), 0644); err != nil {
-		return err
-	}
+`, binaryPath, display, xauth, dbus)
+}
 
-	// Proxy unit — separate process, survives terminal closes
-	proxyUnit := fmt.Sprintf(`[Unit]
+// buildProxyUnit renders the systemd user unit for the proxy. It only listens
+// on localhost and forwards on demand, so it must not block on network setup.
+func buildProxyUnit(binaryPath string) string {
+	return fmt.Sprintf(`[Unit]
 Description=YesMem Proxy — Infinite-thread context for coding agents
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
@@ -1679,6 +1677,82 @@ RestartSec=10
 [Install]
 WantedBy=default.target
 `, binaryPath)
+}
+
+// MigrateSystemdUnits removes After/Wants=network-online.target from already
+// installed unit files (both services are local-first). Idempotent — only
+// rewrites files that still carry the obsolete network dependency. Called from
+// the post-update migration so existing installs heal on the next `yesmem update`.
+func MigrateSystemdUnits(home string) (int, error) {
+	serviceDir := filepath.Join(home, ".config", "systemd", "user")
+	changed := 0
+	for _, name := range []string{"yesmem.service", "yesmem-proxy.service"} {
+		path := filepath.Join(serviceDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return changed, err
+		}
+		content := string(data)
+		if !strings.Contains(content, "network-online.target") {
+			continue
+		}
+		cleaned := stripNetworkOneline(content)
+		if cleaned == content {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(cleaned), 0644); err != nil {
+			return changed, err
+		}
+		changed++
+	}
+	return changed, nil
+}
+
+// stripNetworkOneline removes After=/Wants=network-online.target directives
+// from a unit file, leaving everything else untouched.
+func stripNetworkOneline(content string) string {
+	var kept []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "After=network-online.target" || trimmed == "Wants=network-online.target" {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+func setupSystemd(home, binaryPath string) error {
+	serviceDir := filepath.Join(home, ".config", "systemd", "user")
+	os.MkdirAll(serviceDir, 0755)
+
+	// Agent terminals (gnome-terminal, etc.) need the graphical session env to
+	// render a window. systemd-user services do not inherit it, so capture at
+	// setup time and bake into the unit.
+	display := os.Getenv("DISPLAY")
+	if display == "" {
+		display = ":0"
+	}
+	xauth := os.Getenv("XAUTHORITY")
+	if xauth == "" {
+		xauth = filepath.Join(home, ".Xauthority")
+	}
+	dbus := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
+	if dbus == "" {
+		dbus = fmt.Sprintf("unix:path=/run/user/%d/bus", os.Getuid())
+	}
+
+	// Daemon unit
+	daemonUnit := buildDaemonUnit(binaryPath, display, xauth, dbus)
+	if err := os.WriteFile(filepath.Join(serviceDir, "yesmem.service"), []byte(daemonUnit), 0644); err != nil {
+		return err
+	}
+
+	// Proxy unit — separate process, survives terminal closes
+	proxyUnit := buildProxyUnit(binaryPath)
 	if err := os.WriteFile(filepath.Join(serviceDir, "yesmem-proxy.service"), []byte(proxyUnit), 0644); err != nil {
 		return err
 	}

@@ -305,9 +305,18 @@ func formatRemember(raw json.RawMessage) string {
 		SupersedesID int64  `json:"supersedes_id"`
 		Message      string `json:"message"`
 		Attribution  string `json:"attribution"`
+		Deduplicated bool   `json:"deduplicated"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return string(raw)
+	}
+	if data.Deduplicated {
+		// Soft-dedup response carries only id + message — render the real
+		// reason instead of a misleading "saved" box (match #85112).
+		if data.Message != "" {
+			return data.Message
+		}
+		return fmt.Sprintf("Already known: learning #%d already covers this (%s).", data.ID, data.Category)
 	}
 	if data.ID == 0 {
 		// Error or unexpected format — fallback
@@ -1006,7 +1015,7 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("get_caps",
-			mcplib.WithDescription("Load saved capability definitions. Use to discover available caps by name, tag, or project. Capabilities are reusable, tested tool definitions that persist across sessions."),
+			mcplib.WithDescription("Load saved capability definitions. Without 'name': compact metadata list (no script bodies). With 'name': full definition including scripts. Filter also by tag or project."),
 			mcplib.WithString("project", mcplib.Description(projectFilterDesc)),
 			mcplib.WithString("name", mcplib.Description("Get specific cap by name")),
 			mcplib.WithString("tag", mcplib.Description("Filter by tag")),
@@ -1348,8 +1357,9 @@ func (s *Server) registerTools() {
 
 	s.srv.AddTool(
 		mcplib.NewTool("resume_agent",
-			mcplib.WithDescription("Resume a previously stopped agent. Use to continue work from where a stopped agent left off. Target by agent ID or section name."),
-			mcplib.WithString("to", mcplib.Required(), mcplib.Description("Agent ID or section name")),
+			mcplib.WithDescription("Resume a previously stopped agent. Target by agent ID, section name, or session id (claude session, opencode ses_*, codex session); an explicit session_id is persisted when the backend session column is empty. A bare opencode session id with no agent row bootstraps a fresh agent from opencode's own session DB. Use to continue work from where a stopped agent left off."),
+			mcplib.WithString("to", mcplib.Description("Agent ID, section name, or session id")),
+			mcplib.WithString("session_id", mcplib.Description("Explicit session id to resume (claude session, opencode ses_*, codex session)")),
 			mcplib.WithString("project", mcplib.Description("Project name (for section lookup)")),
 		), s.proxyCall("resume_agent"))
 

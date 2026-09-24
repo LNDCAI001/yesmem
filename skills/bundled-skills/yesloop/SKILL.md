@@ -1,6 +1,6 @@
 ---
 name: yesloop
-description: Autonomous task loop — analyze, plan, execute, verify, review, finish. Runs as visible TUI agent in git worktree. Use when user says "yesloop", "loop", "mach das autonom". Supports --merge for auto-merge, --inline for current session.
+description: Autonomous task loop — analyze, plan, execute, verify, review, finish. Runs as visible TUI agent in git worktree. Use when user says "yesloop", "loop", "run it autonomously".
 user-invocable: true
 disable-model-invocation: false
 allowed-tools: Bash(git *) Bash(go *) Bash(make *) Bash(npm *) Bash(docker *) Bash(python3 *) Bash(sqlite3 *) Bash(curl *) Bash(find *) Bash(ls *) Bash(cat *) Bash(rg *) Bash(mv *) Bash(cp *) Bash(rm *) Bash(mkdir *) Bash(test *) Grep Glob Read Write Edit todowrite Task
@@ -19,14 +19,14 @@ When invoked from an interactive session, **do NOT execute the pipeline yourself
    - Multiple agents can run in parallel without conflicts
    - Easy cleanup: delete worktree + branch if abandoned
 2. Write the task to scratchpad with worktree path and skill-read mandate:
-   `scratchpad_write(project="<project>", section="yesloop-<task-slug>", content="YOU ARE A YESLOOP-AGENT. Load the yesloop skill: use your platform's skill tool, or read ~/.claude/skills/yesloop/SKILL.md, or <repo-root>/skills/bundled-skills/yesloop/SKILL.md. Follow the 6-phase pipeline (ANALYZE → PLAN → EXECUTE → VERIFY → REVIEW → FINISH).\n\nWorktree: <path>\nTask: <description>\n\nReport to scratchpad.")`
+   `scratchpad_write(project="<project>", section="yesloop-<task-slug>", content="YOU ARE A YESLOOP-AGENT. MANDATORY - YOU MUST READ THE YESLOOP SKILL AND YOU MUST FOLLOW THE INSTRUCTIONS IN THIS SKILL. Load the yesloop skill: use your platform's skill tool, or read ~/.claude/skills/yesloop/SKILL.md, or <repo-root>/skills/bundled-skills/yesloop/SKILL.md. Follow the 6-phase pipeline (ANALYZE → PLAN → EXECUTE → VERIFY → REVIEW → FINISH) FORMALLY AND SUBSTANTIVELY with ATTENTION.\n\nWorktree: <path>\nTask: <description>\n\nReport to scratchpad.")`
    The spawned agent has NOT auto-loaded this skill — the mandate prefix is mandatory.
 3. Spawn TUI agent: `yesmem_spawn_agent(project="<project>", section="yesloop-<task-slug>", backend="opencode", work_dir="<worktree-path>")`
 4. Wait 15s for opencode TUI to load + PTY injection to deliver the startup prompt
-5. **Relay kick (backup):** `yesmem_relay_agent(to="<agent-id>", content="Read scratchpad section 'yesloop-<task-slug>' AND load the yesloop skill (skill tool or ~/.claude/skills/yesloop/SKILL.md). Begin 6-phase pipeline.\n")` — backup if PTY is slow
-6. Confirm: "Agent spawned in worktree — sichtbar im Terminal."
+5. **Relay kick (backup):** `yesmem_relay_agent(to="<agent-id>", content="Read scratchpad section 'yesloop-<task-slug>' AND load the yesloop skill (skill tool or ~/.claude/skills/yesloop/SKILL.md). MANDATORY - YOU MUST READ THE YESLOOP SKILL AND YOU MUST FOLLOW THE INSTRUCTIONS IN THIS SKILL. Begin the 6-phase pipeline FORMALLY AND SUBSTANTIVELY with ATTENTION.\n")` — backup if PTY is slow
+6. Confirm: "Agent spawned in worktree — visible in terminal."
 
-**Only run inline if:** user explicitly says `--inline` or task is < 2 min trivial.
+**Only run inline if:** the user EXPLICITLY says `--inline`. There is NO trivial-task exception — "< 2 min" is not a license to skip the worktree. If you'd commit it, it runs in the worktree. Create the worktree BEFORE the first edit.
 
 **"Pipeline" includes exploratory work.** Writing tests, spiking an approach, "just quickly trying the fix on main to see if it works" — if you'd commit it, it belongs in the worktree. Create the worktree BEFORE the first edit, not after you've verified the fix works.
 
@@ -47,7 +47,7 @@ Unknown bare names log a warning and pass through unchanged (best-effort, no err
 When you spawn a yesloop agent, the scratchpad task defines the working relationship. Over-prescribing takes ANALYZE+PLAN away from the agent; under-prescribing sends it into orientation loops. Get the level right.
 
 **Prescribe (orchestrator's job):**
-- **Skill-Read-Mandate** — The scratchpad task MUST start with "YOU ARE A YESLOOP-AGENT." and instruct the agent to load the yesloop skill. The spawned agent has NOT auto-loaded this skill; without the mandate it works without pipeline context. Path fallbacks: platform skill tool, `~/.claude/skills/yesloop/SKILL.md`, or `<repo-root>/skills/bundled-skills/yesloop/SKILL.md`.
+- **Skill-Read-Mandate** — The scratchpad task MUST start with 'YOU ARE A YESLOOP-AGENT.' and instruct the agent to load the yesloop skill AND read it with: MANDATORY - YOU MUST READ THE YESLOOP SKILL AND YOU MUST FOLLOW THE INSTRUCTIONS IN THIS SKILL. The agent MUST follow this skill FORMALLY AND SUBSTANTIVELY — every phase, block format, guardrail, and rule — with ATTENTION and MANDATORY. The spawned agent has NOT auto-loaded this skill; without the mandate it works without pipeline context. Path fallbacks: platform skill tool, `~/.claude/skills/yesloop/SKILL.md`, or `<repo-root>/skills/bundled-skills/yesloop/SKILL.md`.
 - **Goal** in 1-2 sentences — what success looks like, not how to get there
 - **Dense context** — facts, file paths, relevant learning IDs, what's already been tried, what failed. The agent starts cold; you don't.
 - **Hard constraints** — schema-breaking changes, backfills, new dependencies, destructive ops, files off-limits
@@ -115,7 +115,7 @@ update_agent_status(phase="Phase N/6 NAME (milestone M/K)")   # EXECUTE with mil
 update_agent_status(phase="Phase N/6 NAME (blocked: <why>)")
 ```
 
-Free-form string, kanonical format. Single source of truth for live progress.
+Free-form string, canonical format. Single source of truth for live progress.
 
 **Orchestrator validates DONE:**
 - DONE-guard (auto, every 30s) checks phase block compliance via regex
@@ -137,12 +137,16 @@ Since yesmem v2.1.21, the heartbeat scheduler enforces the DONE contract **autom
 2. Each block must have `**Status:**` on its own line with valid value (COMPLETE|BLOCKED|IN PROGRESS)
 3. Per-phase required fields (see Phase Pipeline below)
 4. Phase 5 must contain `**Stage 2: Cold Review` subsection header AND `task() dispatched: yes|blocked`
-5. Phase 6 must contain `send_to orchestrator:` and deploy evidence
+5. Phase 4 must contain `**Regression baseline:**` with a non-empty value and `**RED proof:**`
+6. Phase 5 must contain `**Stage 3: Consequence & Intent` subsection header AND `**consequence dispatched:** yes|blocked`
+7. Phase 6 must contain `send_to orchestrator:` and deploy evidence
 
 **When the guard fires:**
 - Agent is paused with reason `DONE-GUARD: phase validation failed — <errors>`
 - Orchestrator receives `⛔ DONE-GUARD:` notification via `send_to`
 - Agent must fix phase blocks and be resumed
+
+Before pausing, the guard relays the concrete missing fields and re-fires up to 2 times at 90s intervals. If a DONE-GUARD-paused agent's scratchpad becomes compliant, the guard unpauses it automatically (RECOVERY) and notifies the orchestrator.
 
 **Phases missing from scratchpad = still in progress.** The guard only escalates when all 6 phase blocks exist but their content is non-compliant.
 
@@ -154,6 +158,9 @@ These patterns cause the guard to reject the DONE claim:
 |---|---|---|
 | Status on same line as header | `### Phase N: → **Status:**` inline | Status must be on its own `**Status:**` line |
 | Missing Stage 2 header | No `**Stage 2: Cold Review` in Phase 5 | Stage 2 is mandatory per Learning #75412 |
+| Missing Stage 3 header | No `**Stage 3: Consequence & Intent` in Phase 5 | Stage 3 consequence check is mandatory (quality stage-2) |
+| Missing consequence dispatch | No `**consequence dispatched:** yes|blocked` in Phase 5 | Stage 3 dispatch must be evidenced |
+| Missing regression baseline | No `**Regression baseline:**` with a non-empty value in Phase 4 | Deterministic base-vs-head test diff is mandatory (quality stage-2) |
 | Missing orchestrator notification | No `send_to orchestrator:` in Phase 6 | Orchestrator must be notified for DONE |
 | Missing **Security:** field in Phase 5 | No `**Security:**` line in Phase 5 block | Security review (item 6) is mandatory per security-review skill integration |
 | Partial fields in Phase 5 | No issue breakdown, no Subagent ID | Self-Review must be structured |
@@ -202,6 +209,7 @@ update_agent_status(phase="Phase 1/6 ANALYZE")
 ### Phase 1: ANALYZE
 **Status:** COMPLETE
 **Goal understood:** <1 sentence>
+**Task type:** <debug|feature|chore|docs>
 **Session id:** <opencode_session_id or codex_session_id from whoami(), or "missing after 3 retries">
 **Codebase explored:** <files/packages inspected>
 **Constraints identified:** <list>
@@ -210,7 +218,7 @@ update_agent_status(phase="Phase 1/6 ANALYZE")
 **Open questions:** none (must be inferrable, no user questions)
 ```
 
-Information gathering is automatic — never ask the user. Code questions → search_code_index, grep, graph_traverse. API/docs → docs_search, hybrid_search. Errors → deep_search. Unknown concepts → WebFetch or infer.
+Information gathering is automatic — never ask the user. Code questions → search_code_index, grep, graph_traverse. API/docs → docs_search, hybrid_search. Errors → deep_search. Unknown concepts → WebFetch. NEVER guess — if you don't know, look it up (WebFetch or the indexed docs); infer only from code/context already in your turn.
 
 ### Phase 2: PLAN
 ```
@@ -232,14 +240,34 @@ update_agent_status(phase="Phase 2/6 PLAN")
 **Verification gates between milestones:** <compile/test/deploy checks>
 ```
 
+**When `**Task type:** debug` — Depth-lock-Disziplin (Pflichtfeld, vom DONE-Guard erzwungen):**
+Phase 2 braucht zusätzlich diese Zeile:
+`**Depth-lock:** D1 home=<file::function>; D3 deepest=<file::function>; D4 repro=<RED am unpatched Stand VOR Implementierung>`
+- **D3 bestimmt die Fix-Ebene:** der Fix muss genau auf der D3-Ebene liegen. Ein Fix auf einer höheren/niederen Ebene als D3 ist ein depth-miss → zurück zum Plan, D1/D3 überarbeiten.
+- **D4 muss echt gelaufen sein**, nicht geplant: der RED-Output stammt vom unpatched Stand VOR der Implementierung. Ohne realen RED-Lauf ist der Depth-Lock nicht erfüllt.
+- Kompakt halten — Single-Agent-Format, keine Multi-Agent-Overheads (der Autoprompt darf 5 Agenten spannen, yesloop nicht, #73504).
+
 **Milestone criteria (agent decides):**
-- ≤5 steps: single milestone, no sub-structure needed
-- 6-15 steps: 2-3 milestones à 3-6 steps recommended
-- 16+ steps: 4-6 milestones à 3-5 steps (max ~6 per milestone for reset granularity)
+- ≤5 steps: single milestone
+- 6-15 steps: MUST split into 2-3 milestones à 3-6 steps
+- 16+ steps: MUST split into 4-6 milestones à 3-5 steps
 
-Milestones are a recovery aid for context-collapse, not a bureaucracy. If the plan is small, skip them.
+Milestones are a recovery aid for context-collapse, not a bureaucracy. Small plan (≤5 steps) → one milestone suffices; this is a granularity choice, NOT a license to skip the phase structure or the milestone blocks.
 
-**KEIN OVERENGINEERING.** If a step looks complicated, ask: "Can I solve this with a boolean flag and 10 lines?" Usually yes. Resist: per-agent configuration, persistence layers, abstract Strategy interfaces, retry mechanisms with backoff. Prefer: global constants, single struct + map, simple if/return.
+**NO OVERENGINEERING.** If a step looks complicated, ask: "Can I solve this with a boolean flag and 10 lines?" Usually yes. Resist: per-agent configuration, persistence layers, abstract Strategy interfaces, retry mechanisms with backoff. Prefer: global constants, single struct + map, simple if/return.
+
+### Ledger Plan-Schema (set_plan convention — feeds the Live-Ledger)
+Shape the stored plan (set_plan) so the live-ledger subscriber (`ledger_nudge`) can render it as a compact, immediately readable system-state block. A plan following this schema gives the orchestrator and the next self a shared proof-ledger, not a wish-list.
+
+**Schema keys (Goal/Core/Verified/Open/Next):**
+- **Goal:** the one aim of this session, 1-2 lines
+- **Core:** fixed decisions / constraints that are NO LONGER up for debate
+- **Verified:** what is already proven — every item carries a proof line:
+  - `<claim>` — `proof: <command> → <result>` (e.g. `proof: go test ./internal/... → exit 0, 18/18`)
+- **Open:** open questions / alternatives still to be decided
+- **Next:** the immediate next step
+
+**Proof-line requirement:** only an item with a `proof:` line counts as Verified. A claim without a proof pointer belongs in **Open**, not **Verified**. The ledger is an evidence ledger — claims must cite the command and its result.
 
 ### Phase 3: EXECUTE
 ```
@@ -282,15 +310,26 @@ update_agent_status(phase="Phase 4/6 VERIFY")
 ### Phase 4: VERIFY
 **Status:** COMPLETE
 **Tests run:** <command> → exit <code>, last 5 lines: <output>
+**Regression baseline:** base=<origin/main hash> failures=<none|list>; head failures=<none|list>; diff=<none|new failures>
+**RED proof:** <neuer Test RED vor Fix, GREEN nach Fix> | none — docs-only
 **Lint/type-check:** <command> → <result>
 **Build:** <command> → <binary mtime if applicable>
 **Coverage gaps:** none | <list>
-**VERIFY cycles used:** N/3
+**VERIFY cycles used:** N/5
 ```
 
-If issues found → fix and re-verify (max 3 cycles, see CONVERGENCE GATE).
+**Regression baseline (mandatory, deterministic):**
+1. In Phase 2 (PLAN), note the merge-base: `git merge-base HEAD origin/main`
+2. In Phase 4, create a temp checkout of origin/main INSIDE your worktree:
+   `git worktree add .yesmem/tmp/base-checkout origin/main` (project-local, never /tmp)
+3. Run the relevant test suite there (same commands as head), record pass/fail sets
+4. Remove it after use: `git worktree remove .yesmem/tmp/base-checkout --force`
+5. `diff=` lists ONLY test failures that are green on base but fail on head — each is a
+   REGRESSION and must be fixed before REVIEW exit (or proven pre-existing on base)
 
-### Phase 5: REVIEW (Two-Stage: Self + Cold)
+If issues found → fix and re-verify (max 5 cycles, see CONVERGENCE GATE).
+
+### Phase 5: REVIEW (Three-Stage: Self + Cold + Consequence)
 ```
 update_agent_status(phase="Phase 5/6 REVIEW")
 
@@ -309,9 +348,14 @@ update_agent_status(phase="Phase 5/6 REVIEW")
 **Merged assessment:** Yes | With fixes | No — <reasoning>
 **Fix commits:** <hashes or "none needed">
 
+**Stage 3: Consequence & Intent**
+**consequence dispatched:** yes
+**Subagent ID:** <id>
+**Findings:** <intended-vs-actual list or "none">
+
 **Security:** <findings list with NEW/MODIFIED distinction per security-review skill, OR "none — diff reviewed, no findings", OR "skipped — diff is docs-only">
 
-**REVIEW→VERIFY cycles used:** N/3
+**REVIEW→VERIFY cycles used:** N/5
 ```
 
 **Stage 1 — Self-Review** (catches mechanical issues): Get full delta `git diff origin/main` + `git log origin/main..HEAD --oneline`. Checklist: Plan alignment, Code quality, Architecture, Testing, Production readiness, **Security (item 6 — MANDATORY)**, Second-order effects ("if this ships, what happens next? trace 2+ levels"), Assumption surfacing ("what must be TRUE for this to work?").
@@ -322,17 +366,47 @@ update_agent_status(phase="Phase 5/6 REVIEW")
 - Dispatch focused task()-subagent with code-reviewer template (superpowers requesting-code-review)
 - Input: `git diff origin/main` + Phase 2 plan only (no exploration, for speed)
 - **MANDATORY — Cold Review is NOT optional.** Phase 5 is only complete when Stage 2 has actually run. Empirically verified (2026-06-20, Learning #75412): agents skip Stage 2 silently if framed as additive. Required evidence: `task() dispatched: yes` + Subagent ID in scratchpad.
+- **ALL subagent findings must be PROVEN ON CODE.** Every finding requires code-anchored evidence: file line refs, a call path (graph_traverse output), or a reproducing command/failing test. A finding without a code anchor is INVALID and must be reworked by the subagent.
 - **If task() truly fails:** status must be `REVIEW BLOCKED: task() unavailable — <error>`, NOT `DONE`. Orchestrator spawns separate TUI reviewer as fallback.
+
+**Stage 3 — Consequence & Intent Check via task()** (fresh subagent, MANDATORY):
+- Dispatch a focused task()-subagent (separate from Stage 2's reviewer) with:
+  `git diff origin/main`, the Phase 2 **Decisions resolved** block, and this mandate:
+  (a) trace second-order consequences: callers, exposed contracts, defaults, schema,
+  dependent behavior — what breaks or changes that the diff does not show?
+  (b) intent fidelity: does the landed behavior match what Phase 2 decided?
+  Anything drifting into an unwanted direction?
+- **ALL Stage-3 findings must be PROVEN ON CODE** — same evidence bar as Stage 2:
+  file line refs, call path, or a reproducing command/failing test. Unanchored
+  findings are INVALID and must be reworked by the subagent.
+- Evidence in the Phase 5 block: `**Stage 3: Consequence & Intent` header,
+  `**consequence dispatched:** yes`, `**Subagent ID:**`, `**Findings:**`
+- If task() truly fails: `**consequence dispatched:** blocked — <error>` (NOT COMPLETE)
+
+**Double-loop exit criteria (REVIEW→VERIFY):** the loop exits only when ALL of
+these hold: Stages 1-3 complete, Security field clean-or-annotated, and Phase 4
+Regression baseline shows `diff=none` (or all new failures fixed + re-run). If a
+check that must be clean stays red after 2 fix cycles → REVIEW BLOCKED
+escalation.
 
 **Merging & Resolution:**
 - Merge findings from both stages (deduplicate, preserve highest severity)
-- **ALL findings must be fixed autonomously** — no user feedback, no escalation for fixable issues
-- Critical + Important → fix immediately, max 3 cycles per issue
-- Minor → fix if <2 min each, otherwise document and proceed
-- After fixes → loop back to Phase 4 VERIFY, then re-review (max 3 REVIEW→VERIFY cycles total)
+- **ALL findings MUST be fixed autonomously** -- no user feedback, no escalation for fixable issues
+- Critical, Important, medium, mittel → MUST fix immediately
+- Minor also MUST fix immediately
+- After fixes → loop back to Phase 4 VERIFY, then re-review (max 5 REVIEW→VERIFY cycles total)
 - Assessment "No" (unfixable) → STOP, escalate via send_to: "REVIEW BLOCKED: <reasons>"
-- **Never leave fixable issues for the user** — review is a work phase, not advisory
+- **Never leave fixable issues for the user** -- review is a work phase, not advisory
 - After `git show`/`git diff` always `Read` the current file — diffs show what changed, not what's there NOW
+
+### Behauptungs-Inventar (proof-poverty check for the DONE-Report)
+Every coverage / success claim in the DONE-Report must carry a proof pointer (command + result) on the same line; a claim without one is marked UNVERIFIED explicitly. This complements the Phase 4 `**Tests run:**` line — that records the overall run, here each individual claim is bound to its own evidence.
+
+**Format per claim:**
+- `<claim>` → `proof: <command> → <result>` (e.g. `proof: bun test plugins/opencode-yesmem → exit 0, 24/24`)
+- not verifiable now → `<claim>` → `UNVERIFIED: <why not verified>`
+
+Corollary from the ledgere schema: don't claim success you cannot back. Move unproven items to **Open** in the plan instead of asserting them in **Verified**.
 
 ### Phase 6: FINISH
 ```
@@ -363,14 +437,15 @@ update_agent_status(phase="Phase 6/6 FINISH")
   - Rationale: the orchestrator owns release decisions, rollback, commit-message control, and PR review. A self-merge bypasses all four.
 - **Do NOT delete worktree** — keep until the orchestrator confirms the merge is done.
 
-## Mini Example (filled Phase 3, others stubbed)
+## Mini Example (abbreviated — field names and headers are guard-compliant, copy them EXACTLY)
 
 ```
 ### Phase 1: ANALYZE
 **Status:** COMPLETE
 **Goal understood:** Add config.yaml read/write to set_config/get_config
+**Session id:** ses_abc123 (from whoami())
 **Codebase explored:** internal/daemon/handler_state.go, internal/config/config.go
-**Constraints:** no breaking MCP API, proxy_state overrides must still work
+**Constraints identified:** no breaking MCP API, proxy_state overrides must still work
 **Risks:** concurrent writes, type coercion
 **Open questions:** none
 
@@ -410,19 +485,29 @@ update_agent_status(phase="Phase 6/6 FINISH")
 ### Phase 4: VERIFY
 **Status:** COMPLETE
 **Tests run:** go test ./internal/config/... ./internal/daemon/... → exit 0
+**Regression baseline:** base=9e8aa888 failures=none; head failures=none; diff=none
 **Build:** go build ./... → success
-**VERIFY cycles used:** 1/3
+**VERIFY cycles used:** 1/5
 
 ### Phase 5: REVIEW
 **Status:** COMPLETE
-**Stage 1:** Strengths: clean API, good test coverage
-  Issues: Important (1) type coercion, Important (1) proxy_state dual-write
-  Assessment: With fixes
-**Stage 2:** task() dispatched: yes, Subagent ID: agent-234
-  Findings: same 2 Important + 4 Minor
-  Merged assessment: With fixes — fix both IMPORTANTs before merge
-  Fix commits: cd2ba04 fix(config): proxy_state dual-write + type coercion
-  **Security:** none — diff reviewed, no HIGH/MEDIUM/LOW findings
+**Stage 1: Self-Review**
+- Strengths: clean API, good test coverage
+- Issues: Important (2) / Minor (4), with file:line
+- Assessment: With fixes
+**Stage 2: Cold Review via task()**
+**task() dispatched:** yes
+**Subagent ID:** agent-234
+**Findings:** same 2 Important + 4 Minor
+**Merged assessment:** With fixes — ALL 6 findings (2 Important + 4 Minor) fixed before merge
+**Fix commits:** cd2ba04 fix(config): proxy_state dual-write, type coercion + all 4 minors
+
+**Stage 3: Consequence & Intent**
+**consequence dispatched:** yes
+**Subagent ID:** agent-237
+**Findings:** none
+
+**Security:** none — diff reviewed, no HIGH/MEDIUM/LOW findings
 
 ### Phase 6: FINISH
 **Status:** COMPLETE
@@ -441,7 +526,7 @@ update_agent_status(phase="Phase 6/6 FINISH")
 1. Re-read the original goal from `scratchpad_read(project, section)` or `get_plan()`
 2. Compare current state against original scope:
    - **Still on track?** → proceed
-   - **Minor drift?** → document in scratchpad, correct course, proceed
+   - **Minor drift?** → MANDATORY fix immediately — correct course NOW, document what drifted and how you corrected it in scratchpad, then continue
    - **Major divergence?** → **STOP.** scratchpad_write("⚠️ DRIFT: <what changed>") + send_to orchestrator: "DRIFT: <details>. Continue or abort?"
 
 What counts as drift:
@@ -461,7 +546,7 @@ What counts as drift:
 
 **Hard limit:** No forward progress (no completed steps in todowrite) for 5 turns → escalate and stop.
 
-### BEWEISLAST BEI SCRATCHPAD-CLAIMS
+### PROOF BURDEN (BEWEISLAST) for scratchpad claims
 
 Before writing "DONE", "completed", "verified" to scratchpad, confirm the artifact matches the claim — not just that the command exited 0.
 
@@ -474,7 +559,9 @@ Before writing "DONE", "completed", "verified" to scratchpad, confirm the artifa
 | "commit pushed" | `git log origin/<branch> --oneline -1` shows the hash |
 | "PR created" | `gh pr view <url>` exit 0 |
 | "cold review ran" | task()-subagent ID present in scratchpad |
+| "consequence finding" (Stage 3) | file line reference, call path, or repro evidence — unanchored findings are invalid |
 | "file edited" | `Read` the file (not just `git show`) |
+| "new test tests something" | **RED proof:** RED-Output am unpatched Stand (vor dem Fix), nicht nur geplant — bei docs-only explizit `none — docs-only` |
 | "DONE-guard passed" | `ValidatePhaseBlocks(content).Compliant == true` (auto-checked every 30s) |
 
 **Rule:** if verification was skipped, say so explicitly: `<claim> (not independently verified)`. If run, paste observable evidence (one line is enough).
@@ -503,11 +590,14 @@ On startup, before ANY other action:
 2. git rev-parse --show-toplevel → must be the worktree, NOT main repo
 3. git branch --show-current     → must be yesloop/<task-slug>, NOT main
 4. git status --short            → must be clean
+5. Write-Probe                   → mkdir -p .yesmem/tmp && printf probe > .yesmem/tmp/write-probe, dann read-back verifizieren (Inhalt == "probe")
 ```
 
 **IF ANY CHECK FAILS:** STOP. Do not touch files. `scratchpad_write + send_to orchestrator: "⛔ WORKTREE GUARD FAILED: pwd=<actual>, branch=<actual>. Expected <expected>."` Wait for orchestrator.
 
 **IF ALL PASS:** Identify via `whoami`, `scratchpad_read(project, section)`, `get_plan()`, `update_agent_status(phase="Phase 1/6 ANALYZE")`, then begin pipeline.
+
+Write-Probe-Regel: die Probe-Datei wird NICHT gelöscht (kein rm) — sie bleibt im Worktree liegen und wird mit dem Worktree-Cleanup entfernt.
 
 ### Completion — MUST do all three:
 1. `scratchpad_write(content="✅ DONE: <summary>. PR: <url>")` — final write with all 6 phase blocks COMPLETE
@@ -524,7 +614,7 @@ On startup, before ANY other action:
 |---|---|
 | Simple fix, clear solution | Execute directly |
 | 2-3 approaches, unclear best | Pick one, document rationale, proceed |
-| Need to change scope | Document, proceed if minor; escalate if major |
+| Need to change scope | MANDATORY fix immediately — stop the drift, correct course NOW, document it. Escalate only if the correction itself is impossible or blocking |
 | Tests fail repeatedly | Debug max 3 cycles → CONVERGENCE GATE |
 | Irreversible action (force-push, drop table) | Pause, request confirmation |
 | 3 consecutive ticks with nothing to do | End the loop, report idle |
@@ -536,7 +626,7 @@ On startup, before ANY other action:
 - **inline mode:** short progress updates to user between phases
 - **TUI agent mode:** scratchpad_write for detailed state, send_to for completion
 - **scheduled mode:** scratchpad_write for state, broadcast on completion
-- Never ask "soll ich weitermachen?" — just continue unless blocked
+- Never ask "should I continue?" — just continue unless blocked
 
 ## Automated Idle-Trigger
 
@@ -556,7 +646,7 @@ Layer 2 of the yesloop guarantee: **Idle Detection** for yesloop agents with a l
 
 The daemon sends these exact messages (metachar-free, no markdown, no backticks):
 
-1. **State 0 → 1:** `Have you completed all 6 phases? If not do it now. For each phase prove you have done each, IF you have proven mark each phase in scratchpad with [x] showing it is done. MANDATORY: Make sure that you have also done phase 5 with all code reviews including Stage 2 cold review via task subagent. REVIEW BLOCKED without subagent trace is not acceptable. Mandatory: only mark as PROVEN if it IS proven.`
+1. **State 0 → 1:** `Have you completed all 6 phases? If not do it now. For each phase prove you have done each, IF you have proven mark each phase in scratchpad with [x] showing it is done. MANDATORY: Make sure that you have also done phase 5 with all code reviews including Stage 2 cold review and Stage 3 consequence check via task subagents. REVIEW BLOCKED without subagent trace is not acceptable. Mandatory: only mark as PROVEN if it IS proven.`
 2. **State 1 → 2:** `Mark all 6 phases as done with x in scratchpad.`
 3. **State 2 → 3:** `If 1 through 6 are ok commit and send_to to caller.`
 
@@ -630,6 +720,52 @@ The done-verify checker reads the agent's scratchpad section to detect progress:
 
 - **Idle Detection (Layer 2)** triggers on stream inactivity; Done-Verify (Layer 3) triggers on DONE-claims. They are complementary and can both fire for the same agent.
 - **DONE-Guard (Layer 3 regex validator)** freezes agents that claim DONE with malformed phase blocks. Done-Verify catches the case where phase blocks look valid but Phase 5 Cold Review was silently skipped — the agent must actively BEWEISEN it ran Stage 2.
+
+## Automated Skill-Reload Check (Layer 4)
+
+Layer 4 of the yesloop guarantee: **Context-Compaction-Re-Read** gegen Skill-Verlust. Lange yesloop-Läufe können den Skill-Text verlieren, wenn der Kontext kompaktiert wird — der Agent würde dann ohne Pipeline-Vorgaben weitermachen. Der Daemon (`checkYesloopSkillCheck` in `internal/daemon/yesloop_skillcheck.go`, 30s-Heartbeat) beobachtet das kumulierte Arbeitsvolumen je Agent (OutputTokens-Delta seit Reset-Basis ≥ 100.000, Fallback TurnsUsed-Delta ≥ 50) und erinnert per Relay daran, den Skill neu zu laden.
+
+### State Machine
+
+| State | Condition | Action |
+|---|---|---|
+| 0 TRACKING | Arbeitsvolumen unter Schwelle seit Baseline | No action |
+| 1 REMIND | OutputTokens-Delta ≥ 100k ODER Turns-Delta ≥ 50 seit Baseline | Relay: Skill-Ladezustand prüfen, bei Bedarf neu laden, per Marker bestätigen |
+| 2 CONFIRMED | **SKILL-RELOAD-<N>:** yes mit aktueller Runden-Nummer im Scratchpad | Baseline auf aktuellen Stand zurücksetzen → zurück zu TRACKING |
+| 3 DEAD_AGENT_ESCALATION | 3 Re-Fires ohne Marker | Freeze + notifyOrchestrator |
+
+### Context-Compaction-Re-Read (Agentenseite — MANDATORY)
+
+- Erhält der Agent einen Relay, der auf Context-Compaction / Skill-Verlust hinweist (Absender `yesloop-skillcheck`): DEN SKILL SOFORT NEU LADEN (`skill`-Tool oder `~/.claude/skills/yesloop/SKILL.md` / Bundle-Pfad lesen).
+- Danach als Beweis per `scratchpad_append` die EXAKTE Bestätigungszeile aus dem Relay schreiben, inklusive der aktuellen Runden-Nummer: `SKILL-RELOAD-<N>: yes` (z.B. `**SKILL-RELOAD-3:** yes`).
+- Der Daemon erkennt den Marker nur, wenn die Runden-Nummer zum aktuellen Fenster passt (case-insensitive, tolerant gegenüber `**`) und setzt dann seine Tracking-Basis zurück — der nächste Reminder feuert erst nach der nächsten akkumulierten Schwelle.
+- Die Runden-Nummer ändert sich pro Fenster: ein alter Marker aus einem früheren Fenster bestätigt ein neues Fenster NICHT. Nur eine echte, aktuelle Bestätigung verdient den Reload.
+- Ohne echten Reload KEINEN Marker setzen — der Zustand wird nur durch eine tatsächlich geladene Skill-Instanz verdient.
+
+### Re-fire and Escalation
+
+- Re-fires alle 5 Minuten ohne Marker-Progress für das aktuelle Runden-Fenster.
+- Nach dem 3. Re-Fire-Intervall ohne Fortschritt (initialer Relay + max 2 weitere gesendete Re-Fires) wird der Agent als DEAD_AGENT gepaust und der Orchester via send_to benachrichtigt.
+
+### Boundary with other layers
+
+- **Compaction-Check (Layer 4)** feuert auf akkumuliertes Arbeitsvolumen eines LAUFENDEN Agents — orthogonal zu Idle (Stream-Inaktivität) und Done-Verify (DONE-Claims). Alle drei können für denselben Agent feuern.
+
+## Automated Stagnation Monitor (Layer 5)
+
+Layer 5 of the yesloop guarantee: **Stagnation Detection** for agents with an **active** stream and a live PID that produce no observable progress (no scratchpad writes, no `update_agent_status` changes) for >2 hours. Complements the Idle guard (which only fires on stream *inactivity*) — catches day-scale runs where the stream stays active but nothing advances. AVO-inspired conditional intervention (arXiv 2603.24517 §3.3): the trigger is fully deterministic, not a permanent supervisor.
+
+**Trigger condition:** running `yesloop-` agent, PID alive, stream `active`, `CountCompletedPhases < 6`, and the progress signal — `stagnationSig(scratchpad content, agent.Progress)` — unchanged for >1h. Any change to the signal resets tracking. Reset happens on PROGRESS only, never on stream blips (#82787 lesson).
+
+### State Machine
+
+| State | Condition | Action |
+|---|---|---|
+| TRACKING | signal unchanged <2h | no action |
+| REFIRING | signal unchanged >1h | relay STAGNATION + up to 3 refires @30min |
+| ESCALATION | refires > 2 | `pauseAgent` + `notifyOrchestrator` (DEAD_AGENT) |
+
+Upon receiving a STAGNATION relay: write a status line with current evidence to the scratchpad immediately (scratchpad_append). If genuinely stuck, either change approach or document BLOCKED with the reason. Do not ignore the relay — escalation pauses you after 4 relays.
 
 ## Anti-Patterns
 

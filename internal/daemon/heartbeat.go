@@ -41,6 +41,8 @@ func (h *Handler) startAgentHeartbeat(ctx context.Context) {
 			if tick%30 == 0 {
 				h.checkYesloopDoneGuard()
 				h.checkYesloopIdle()
+				h.checkYesloopSkillCheck()
+				h.checkYesloopStagnation()
 			}
 			if doneVerifyTick >= 300 {
 				h.checkYesloopDoneVerify()

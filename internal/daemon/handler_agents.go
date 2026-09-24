@@ -160,6 +160,69 @@ func (h *Handler) handleSpawnAgent(params map[string]any) Response {
 	})
 }
 
+// handleOpenAgentTerminal starts a terminal agent session as a managed agent:
+// a PTY bridge + terminal window (like spawn_agent) for existing (session_id)
+// or new (empty session_id) sessions. Managed sessions are then reachable via
+// relay_agent/send_to, exactly like swarm agents.
+func (h *Handler) handleOpenAgentTerminal(params map[string]any) Response {
+	sessionID, _ := params["session_id"].(string) // resume target; empty = new session
+	workDir, _ := params["work_dir"].(string)
+	backend, _ := params["backend"].(string)
+	if backend == "" {
+		backend = "opencode"
+	}
+	project, _ := params["project"].(string)
+	// Project als Absolutpfad aus dem Workdir auflösen. Short-Names können
+	// mehrdeutig sein (ResolveProjectShort wirft AmbiguousProjectError, wenn
+	// mehrere Kandidaten existieren — z.B. mehrere "opencode"-Worktrees).
+	if project == "" || !strings.HasPrefix(project, "/") {
+		project = h.store.ResolveProjectShort(workDir)
+	}
+	if project == "" {
+		project = filepath.Base(workDir)
+	}
+	if project == "" {
+		return errorResponse("project required")
+	}
+
+	id, err := h.store.AgentNextID(project)
+	if err != nil {
+		return errorResponse(fmt.Sprintf("generate agent ID: %v", err))
+	}
+	agentSessionID := sessionID
+	if agentSessionID == "" {
+		agentSessionID = generateAgentUUID()
+	}
+	section := fmt.Sprintf("term-%s", strings.TrimPrefix(id, "agent-"))
+
+	agent := storage.Agent{
+		ID:        id,
+		Project:   project,
+		Section:   section,
+		SessionID: agentSessionID,
+		Status:    "pending",
+		Backend:   backend,
+	}
+	if backend == "opencode" {
+		agent.OpencodeSessionID = sessionID
+	}
+	if err := h.store.AgentCreate(agent); err != nil {
+		return errorResponse(fmt.Sprintf("create agent: %v", err))
+	}
+
+	sockPath := filepath.Join(h.dataDir, fmt.Sprintf("%s.sock", id))
+	wd := h.resolveAgentWorkDir(project, workDir, backend)
+	if !h.disableAgentProcesses {
+		go h.spawnAgentProcess(id, agentSessionID, project, section, "", sockPath, wd, backend, "", 0, sessionID != "")
+	}
+	return jsonResponse(map[string]any{
+		"status":   "starting",
+		"agent_id": id,
+		"section":  section,
+		"resume":   sessionID != "",
+	})
+}
+
 // codexSessionFile holds a path and modification time for sorting.
 type codexSessionFile struct {
 	path    string
@@ -255,13 +318,42 @@ func pollCodexSessionID(workDir string, timeout time.Duration) string {
 // the most recent session matching workDir and returns its session ID.
 // Returns "" on timeout or error; every failure path logs its reason so a
 // missing capture (→ whoami is_agent=false) can be diagnosed from the logs.
-func pollOpencodeSessionID(workDir string, timeout time.Duration) string {
+// opencodeDBPath resolves to the opencode CLI's session database; overridable
+// in tests.
+var opencodeDBPath = func() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Printf("[agent_capture] opencode session capture: cannot resolve home dir: %v", err)
 		return ""
 	}
-	dbPath := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+}
+
+// opencodeSessionDir returns the working directory of an opencode session by
+// its bare session id, or "" when the session is unknown. Used to bootstrap
+// agents from ses_* ids that reference no yesmem agent row.
+func opencodeSessionDir(sessionID string) string {
+	dbPath := opencodeDBPath()
+	if dbPath == "" || sessionID == "" {
+		return ""
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return ""
+	}
+	escaped := strings.ReplaceAll(sessionID, "'", "''")
+	query := fmt.Sprintf("SELECT directory FROM session WHERE id = '%s' LIMIT 1", escaped)
+	out, err := exec.Command("sqlite3", dbPath, query).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func pollOpencodeSessionID(workDir string, timeout time.Duration) string {
+	dbPath := opencodeDBPath()
+	if dbPath == "" {
+		log.Printf("[agent_capture] opencode session capture: cannot resolve home dir")
+		return ""
+	}
 	if _, err := os.Stat(dbPath); err != nil {
 		log.Printf("[agent_capture] opencode session capture: opencode.db not found at %s: %v", dbPath, err)
 		return ""
@@ -474,6 +566,12 @@ func (h *Handler) spawnAgentProcess(id, sessionID, project, section, prompt, soc
 	terminal := h.agentTerminal
 	if terminal == "" {
 		terminal = orchestrator.DetectTerminal()
+	}
+	if terminal == "unknown" {
+		// Daemon läuft headless (systemd) — DetectTerminal findet keinen
+		// Emulator. Ghostty ist auf diesem Host das Standard-Terminal und
+		// wird via +new-window zuverlässig geöffnet.
+		terminal = "ghostty"
 	}
 	title := fmt.Sprintf("yesmem-%s #%s", section, strings.TrimPrefix(id, "agent-"))
 	bin, spawnArgs := orchestrator.BuildSpawnCommand(terminal, binPath, title, "agent-tty", "--sock", sockPath)
@@ -746,7 +844,8 @@ func (h *Handler) handleStopAgent(params map[string]any) Response {
 		if err == nil {
 			exitCmd := "/exit\r"
 			if agent.Backend == "opencode" {
-				exitCmd = "\x03" // Ctrl+C for opencode (no /exit command)
+				// double ctrl+c — a single press doesn't exit this opencode version
+				exitCmd = "\x03\x03"
 			}
 			_, writeErr := conn.Write([]byte(exitCmd))
 			conn.Close()
@@ -854,14 +953,48 @@ func (h *Handler) handleStopAllAgents(params map[string]any) Response {
 func (h *Handler) handleResumeAgent(params map[string]any) Response {
 	to, _ := params["to"].(string)
 	project, _ := params["project"].(string)
+	explicitSession, _ := params["session_id"].(string)
 
-	if to == "" {
-		return errorResponse("to required")
+	if to == "" && explicitSession == "" {
+		return errorResponse("to or session_id required")
 	}
 
-	agent, err := h.resolveAgent(to, project)
-	if err != nil {
-		return errorResponse(err.Error())
+	// An explicit session id (claude session, opencode ses_*, codex session)
+	// resolves via AgentGetAnyBySession — it is often the only identifier still
+	// known once an agent stopped.
+	var agent *storage.Agent
+	var resolveErr error
+	if explicitSession != "" {
+		if a, err := h.store.AgentGetAnyBySession(explicitSession); err == nil && a != nil {
+			agent = a
+		}
+	}
+	if agent == nil && to != "" {
+		a, err := h.resolveAgent(to, project)
+		if err == nil {
+			agent = a
+		} else {
+			resolveErr = err
+		}
+	}
+	if agent == nil {
+		// Bare opencode session id with no agent row: bootstrap a fresh agent
+		// when opencode's own DB knows the session — the ses_* id is often the
+		// only surviving identifier once agent rows are gone.
+		target := explicitSession
+		if target == "" {
+			target = to
+		}
+		if dir := opencodeSessionDir(target); dir != "" {
+			return h.bootstrapOpencodeResume(target, dir, project)
+		}
+		if resolveErr != nil {
+			return errorResponse(resolveErr.Error())
+		}
+		if to == "" {
+			return errorResponse(fmt.Sprintf("no agent found for session_id %q", explicitSession))
+		}
+		return errorResponse(fmt.Sprintf("no agent found matching %q (project=%q)", to, project))
 	}
 
 	if agent.Status != "stopped" && agent.Status != "paused" && agent.Status != "finished" {
@@ -870,14 +1003,14 @@ func (h *Handler) handleResumeAgent(params map[string]any) Response {
 	if agent.Backend == "" {
 		agent.Backend = "claude"
 	}
-	if agent.SessionID == "" {
+	if agent.SessionID == "" && explicitSession == "" {
 		return errorResponse(fmt.Sprintf("agent %s has no session_id to resume", agent.ID))
 	}
-	// L4: opencode resume requires a captured OpencodeSessionID. Without it,
-	// spawnAgentProcess would fall back to the daemon UUID and opencode would
-	// exit 1 (Learning #80228). Reject here with a clear message so the
-	// orchestrator knows to relay_agent instead of retrying resume.
-	if agent.Backend == "opencode" && agent.OpencodeSessionID == "" {
+	// L4: opencode resume requires a captured OpencodeSessionID. An explicitly
+	// passed ses_* is accepted and persisted below; without either, reject so
+	// spawnAgentProcess never falls back to the daemon UUID (opencode exit 1,
+	// Learning #80228).
+	if agent.Backend == "opencode" && agent.OpencodeSessionID == "" && explicitSession == "" {
 		return errorResponse(fmt.Sprintf("agent %s is %s", agent.ID, opencodeUnresumableMsg))
 	}
 	if active, err := h.store.AgentGetActiveBySection(agent.Project, agent.Section); err == nil && active != nil && active.ID != agent.ID {
@@ -886,7 +1019,7 @@ func (h *Handler) handleResumeAgent(params map[string]any) Response {
 
 	sockPath := filepath.Join(h.dataDir, fmt.Sprintf("%s.sock", agent.ID))
 	workDir := h.resolveAgentWorkDir(agent.Project, "", agent.Backend)
-	if err := h.store.AgentUpdate(agent.ID, map[string]any{
+	update := map[string]any{
 		"status":      "pending",
 		"pid":         0,
 		"sock_path":   "",
@@ -894,15 +1027,79 @@ func (h *Handler) handleResumeAgent(params map[string]any) Response {
 		"progress":    "resuming",
 		"error":       "",
 		"stopped_at":  "",
-	}); err != nil {
+	}
+	// Persist an explicitly passed backend session id so spawnAgentProcess's
+	// resume branch (which prefers the stored dedicated column) uses it.
+	switch agent.Backend {
+	case "opencode":
+		if agent.OpencodeSessionID == "" && explicitSession != "" {
+			update["opencode_session_id"] = explicitSession
+		}
+	case "codex":
+		if agent.CodexSessionID == "" && explicitSession != "" {
+			update["codex_session_id"] = explicitSession
+		}
+	}
+	if err := h.store.AgentUpdate(agent.ID, update); err != nil {
 		return errorResponse(fmt.Sprintf("resume agent: %v", err))
 	}
-	go h.spawnAgentProcess(agent.ID, agent.SessionID, agent.Project, agent.Section, "", sockPath, workDir, agent.Backend, "", 0, true)
+	// claude resumes via the session-id CLI arg; an explicit session wins.
+	resumeSession := agent.SessionID
+	if agent.Backend == "claude" && explicitSession != "" {
+		resumeSession = explicitSession
+	}
+	go h.spawnAgentProcess(agent.ID, resumeSession, agent.Project, agent.Section, "", sockPath, workDir, agent.Backend, "", 0, true)
 
 	return jsonResponse(map[string]any{
 		"status":   "resuming",
 		"agent_id": agent.ID,
 		"section":  agent.Section,
+	})
+}
+
+// bootstrapOpencodeResume creates a fresh agent row for a bare opencode
+// session id that references no yesmem row, using the session directory from
+// opencode's DB as the agent workDir.
+func (h *Handler) bootstrapOpencodeResume(sessionID, workDir, project string) Response {
+	if project == "" {
+		project = workDir
+	}
+	short := strings.TrimPrefix(sessionID, "ses_")
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	section := "resumed-" + short
+	if existing, err := h.store.AgentGetActiveBySection(project, section); err == nil && existing != nil {
+		// Session already bootstrapped before — resume that row instead.
+		return h.handleResumeAgent(map[string]any{"to": existing.ID, "session_id": sessionID})
+	}
+
+	id, err := h.store.AgentNextID(project)
+	if err != nil {
+		return errorResponse(fmt.Sprintf("generate agent ID: %v", err))
+	}
+	agent := storage.Agent{
+		ID:                id,
+		Project:           project,
+		Section:           section,
+		SessionID:         generateAgentUUID(),
+		Status:            "pending",
+		Backend:           "opencode",
+		OpencodeSessionID: sessionID,
+	}
+	if err := h.store.AgentCreate(agent); err != nil {
+		return errorResponse(fmt.Sprintf("create agent: %v", err))
+	}
+	if !h.disableAgentProcesses {
+		sockPath := filepath.Join(h.dataDir, fmt.Sprintf("%s.sock", id))
+		go h.spawnAgentProcess(id, agent.SessionID, project, section, "", sockPath, workDir, "opencode", "", 0, true)
+	}
+	return jsonResponse(map[string]any{
+		"status":       "resuming",
+		"agent_id":     id,
+		"section":      section,
+		"work_dir":     workDir,
+		"bootstrapped": true,
 	})
 }
 
@@ -1116,6 +1313,13 @@ func (h *Handler) resolveAgent(idOrSection, project string) (*storage.Agent, err
 		if err == nil && agent != nil {
 			return agent, nil
 		}
+	}
+
+	// Fall back to a session identifier (claude session, opencode ses_*, codex
+	// session — plain or opencode:/codex:-prefixed). Often the only handle left
+	// once an agent stopped.
+	if agent, err := h.store.AgentGetAnyBySession(idOrSection); err == nil && agent != nil {
+		return agent, nil
 	}
 
 	return nil, fmt.Errorf("no agent found matching %q (project=%q)", idOrSection, project)
